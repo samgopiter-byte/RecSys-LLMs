@@ -40,6 +40,25 @@ function populateMoviesDropdown() {
     });
 }
 
+// Build a binary genre vector (length 18) for a movie
+function buildGenreVector(genres) {
+    return genreNames.map(genre => genres.includes(genre) ? 1 : 0);
+}
+
+// Cosine similarity between two binary genre vectors
+function cosineSimilarity(vectorA, vectorB) {
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < vectorA.length; i++) {
+        dot += vectorA[i] * vectorB[i];
+        normA += vectorA[i] * vectorA[i];
+        normB += vectorB[i] * vectorB[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 // Main recommendation function
 function getRecommendations() {
     const resultElement = document.getElementById('result');
@@ -71,35 +90,20 @@ function getRecommendations() {
         setTimeout(() => {
             try {
                 // Step 3: Prepare for similarity calculation
-                const likedGenres = new Set(likedMovie.genres);
+                const likedVector = buildGenreVector(likedMovie.genres);
                 const candidateMovies = movies.filter(movie => movie.id !== likedMovie.id);
                 
-                // Step 4: Calculate Jaccard similarity scores
-                const scoredMovies = candidateMovies.map(candidate => {
-                    const candidateGenres = new Set(candidate.genres);
-                    
-                    // Calculate intersection
-                    const intersection = new Set(
-                        [...likedGenres].filter(genre => candidateGenres.has(genre))
-                    );
-                    
-                    // Calculate union
-                    const union = new Set([...likedGenres, ...candidateGenres]);
-                    
-                    // Calculate Jaccard similarity
-                    const score = union.size > 0 ? intersection.size / union.size : 0;
-                    
-                    return {
-                        ...candidate,
-                        score: score
-                    };
-                });
+                // Step 4: Calculate cosine similarity scores
+                const scoredMovies = candidateMovies.map(candidate => ({
+                    ...candidate,
+                    score: cosineSimilarity(likedVector, buildGenreVector(candidate.genres))
+                }));
                 
                 // Step 5: Sort by score in descending order
                 scoredMovies.sort((a, b) => b.score - a.score);
                 
                 // Step 6: Select top recommendations
-                const topRecommendations = scoredMovies.slice(0, 2);
+                const topRecommendations = scoredMovies.slice(0, 5);
                 
                 // Step 7: Display results
                 if (topRecommendations.length > 0) {
