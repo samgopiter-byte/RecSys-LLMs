@@ -59,6 +59,38 @@ function cosineSimilarity(vectorA, vectorB) {
     return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+// Watched movies used to build the user profile (user's own picks)
+const SEED_MOVIE_IDS = [33, 202, 222];
+
+// Build a user profile vector (length 18): average of the watched movies' genre vectors
+function buildUserProfile(movieIds) {
+    const profile = new Array(genreNames.length).fill(0);
+    let count = 0;
+    movieIds.forEach(id => {
+        const movie = movies.find(m => m.id === id);
+        if (movie) {
+            const vector = buildGenreVector(movie.genres);
+            for (let i = 0; i < vector.length; i++) {
+                profile[i] += vector[i];
+            }
+            count++;
+        }
+    });
+    return profile.map(value => count > 0 ? value / count : 0);
+}
+
+// Profile-based recommendations: compare the user profile vector with all movies
+function getProfileRecommendations(watchedIds) {
+    const profile = buildUserProfile(watchedIds);
+    const candidates = movies.filter(movie => !watchedIds.includes(movie.id));
+    const scored = candidates.map(movie => ({
+        ...movie,
+        score: cosineSimilarity(profile, buildGenreVector(movie.genres))
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5);
+}
+
 // Main recommendation function
 function getRecommendations() {
     const resultElement = document.getElementById('result');
@@ -105,10 +137,14 @@ function getRecommendations() {
                 // Step 6: Select top recommendations
                 const topRecommendations = scoredMovies.slice(0, 5);
                 
-                // Step 7: Display results
+                // Step 7: Display results (Item-to-Item Top-5 + Profile-Based Top-5)
+                const profileRecommendations = getProfileRecommendations(SEED_MOVIE_IDS);
+                const recommendationTitles = topRecommendations.map(movie => movie.title);
+                const profileTitles = profileRecommendations.map(movie => movie.title);
                 if (topRecommendations.length > 0) {
-                    const recommendationTitles = topRecommendations.map(movie => movie.title);
-                    resultElement.textContent = `Because you liked "${likedMovie.title}", we recommend: ${recommendationTitles.join(', ')}`;
+                    resultElement.textContent =
+                        `Because you liked "${likedMovie.title}", we recommend (Item-to-Item Top-5): ${recommendationTitles.join(', ')} | ` +
+                        `(Profile-Based Top-5): ${profileTitles.join(', ')}`;
                     resultElement.className = 'success';
                 } else {
                     resultElement.textContent = `No recommendations found for "${likedMovie.title}".`;
