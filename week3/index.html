@@ -3,16 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Matrix Factorization Movie Recommender</title>
+    <title>Collaborative Filtering Movie Recommender</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Matrix Factorization Movie Recommender</h1>
-            <p>Train a collaborative filtering model in your browser using TensorFlow.js</p>
+            <h1>Collaborative Filtering Recommender</h1>
+            <p>Memory-based neighbourhood CF over MovieLens 100K, computed in your browser</p>
         </header>
-        
+
         <main>
             <div class="controls">
                 <div class="input-group">
@@ -21,24 +21,93 @@
                         <option value="">Loading users...</option>
                     </select>
                 </div>
-                
+
+                <div class="input-group">
+                    <label for="movie-search">Search movie:</label>
+                    <div class="search-row">
+                        <input
+                            type="text"
+                            id="movie-search"
+                            class="search-input"
+                            placeholder="Search movie..."
+                            autocomplete="off"
+                            spellcheck="false"
+                            oninput="onMovieSearchInput()">
+                        <button
+                            type="button"
+                            id="search-clear"
+                            class="search-clear"
+                            title="Clear search"
+                            aria-label="Clear search"
+                            hidden
+                            onclick="clearMovieSearch()">&times;</button>
+                    </div>
+                    <div id="search-count" class="search-count">1682 movies found</div>
+                </div>
+
                 <div class="input-group">
                     <label for="movie-select">Select Movie:</label>
                     <select id="movie-select">
                         <option value="">Loading movies...</option>
                     </select>
                 </div>
-                
+
                 <button id="predict-btn" onclick="predictRating()" disabled>Predict Rating</button>
             </div>
-            
-            <div id="status" class="status">Loading data and training model...</div>
-            <div id="result" class="result"></div>
+
+            <div class="quick-examples">
+                <div class="quick-examples-title">Quick examples</div>
+                <div class="quick-examples-buttons">
+                    <button type="button" class="quick-btn" onclick="applyQuickExample(0)">
+                        <span class="quick-key">A</span> Standard, both agree
+                        <span class="quick-hint">User 308 + L.A. Confidential</span>
+                    </button>
+                    <button type="button" class="quick-btn" onclick="applyQuickExample(1)">
+                        <span class="quick-key">B</span> Large disagreement
+                        <span class="quick-hint">User 206 + Ghosts of Mississippi</span>
+                    </button>
+                    <button type="button" class="quick-btn" onclick="applyQuickExample(2)">
+                        <span class="quick-key">C</span> One method fails
+                        <span class="quick-hint">User 196 + Murder, My Sweet</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="status" class="status">Loading data and building rating index...</div>
+
+            <div class="results">
+                <div id="result" class="result">
+                    <div id="result-user" class="result-card pending">
+                        <div class="result-label">User-Based CF</div>
+                        <div class="result-body">Pick a user and a movie, then press Predict Rating.</div>
+                    </div>
+
+                    <div id="result-item" class="result-card pending">
+                        <div class="result-label">Item-Based CF</div>
+                        <div class="result-body">Pick a user and a movie, then press Predict Rating.</div>
+                    </div>
+                </div>
+
+                <div id="result-compare" class="result-card neutral">
+                    <div class="result-label">Comparison</div>
+                    <div class="result-body">Both methods run on the same selected user + movie.</div>
+                </div>
+            </div>
+
+            <p id="leakage-note" class="leakage-note" role="status"></p>
+
+            <div class="diagnostics-bar">
+                <button type="button" id="diagnostics-toggle" class="toggle-btn"
+                        aria-expanded="false" aria-controls="diagnostics" onclick="toggleDiagnostics()">
+                    Show diagnostics
+                </button>
+            </div>
+
+            <div id="diagnostics" class="diagnostics"></div>
         </main>
     </div>
 
-    <!-- Load TensorFlow.js first, then our data module, then our main script -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <!-- No TensorFlow.js: HW3 uses memory-based neighbourhood CF, not Matrix Factorization -->
     <script src="data.js"></script>
     <script src="script.js"></script>
 </body>

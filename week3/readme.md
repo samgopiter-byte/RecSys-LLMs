@@ -1,6 +1,17 @@
+# HW3 Implementation Note
+
+The original Week 3 starter project used Matrix Factorization with TensorFlow.js.
+
+For HW3, I adapted the existing starter project to implement memory-based Collaborative Filtering with both User-Based CF and Item-Based CF.
+
+The implementation uses Pearson correlation on co-rated observations, reliability weighting based on the number of common ratings, explicit cold-start and sparsity handling, and a UI for comparing both prediction methods.
+
+I also added movie search, quick demonstration examples, and diagnostic information to make the behaviour of both algorithms easier to inspect.
+
+---
 You are an expert full-stack web developer specializing in in-browser machine learning with TensorFlow.js.
 
-Your task is to generate the complete code for a "Matrix Factorization Movie Recommender" web application. The application will load and parse data, define and train a Matrix Factorization model using TensorFlow.js, and then use the trained model to predict movie ratings. Please provide the code for each of the four files—`index.html`, `style.css`, `data.js`, and `script.js`—separately and clearly labeled.
+Your task is to generate the complete code for a "Matrix Factorization Movie Recommender" web application. The application will load and parse data, define and train a Matrix Factorization model using TensorFlow.js, and then use the trained model to predict movie ratings. Please provide the code for each of the four filesâ€”`index.html`, `style.css`, `data.js`, and `script.js`â€”separately and clearly labeled.
 
 ---
 
