@@ -270,6 +270,214 @@ select:focus {
     font-size: 1.2rem;
 }
 
+/* ---------------------------------------------------------------------------
+   Panels: the Top-5 view is primary, the inspector is secondary.
+   --------------------------------------------------------------------------- */
+
+.panel {
+    background: white;
+    border-radius: 8px;
+    border-left: 4px solid #bdc3c7;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+}
+
+.primary-panel {
+    border-left-color: #2ecc71;
+}
+
+.inspector-panel {
+    border-left-color: #5dade2;
+}
+
+.panel-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.panel-header h2 {
+    margin: 0;
+    font-size: 1.25rem;
+    color: #2c3e50;
+}
+
+.panel-subtitle {
+    margin: 0;
+    font-size: 0.85rem;
+    color: #7f8c8d;
+    font-style: italic;
+}
+
+.user-picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.user-picker label {
+    font-weight: 600;
+    color: #566573;
+    font-size: 0.9rem;
+}
+
+.topn-label {
+    font-weight: 400 !important;
+    color: #7f8c8d !important;
+}
+
+#top5-btn {
+    background: #2ecc71;
+    color: white;
+    border: none;
+    padding: 9px 16px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+#top5-btn:hover:not(:disabled) {
+    background: #27ae60;
+}
+
+#top5-btn:disabled {
+    background: #bdc3c7;
+    cursor: not-allowed;
+}
+
+.top5-summary {
+    font-size: 0.85rem;
+    color: #566573;
+    background: #f4f6f7;
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+}
+
+.top5-summary:empty {
+    display: none;
+}
+
+/* Two visually equal columns, one per method. */
+.top5-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    align-items: start;
+}
+
+.top5-column {
+    border: 1px solid #ecf0f1;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.top5-column-header {
+    background: #2c3e50;
+    color: white;
+    padding: 8px 14px;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.top5-list-container {
+    padding: 6px 10px 10px;
+    min-height: 90px;
+}
+
+.top5-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: none;
+}
+
+.top5-row {
+    display: grid;
+    grid-template-columns: 22px 1fr 52px 74px;
+    align-items: baseline;
+    gap: 8px;
+    padding: 7px 4px;
+    border-bottom: 1px solid #f4f6f7;
+}
+
+.top5-row:last-child {
+    border-bottom: none;
+}
+
+.top5-rank {
+    color: #95a5a6;
+    font-weight: 700;
+    font-size: 0.85rem;
+    text-align: right;
+}
+
+.top5-title {
+    color: #2c3e50;
+    font-size: 0.92rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.top5-score {
+    font-weight: 700;
+    font-size: 0.95rem;
+    text-align: right;
+}
+
+.top5-score.rating-high { color: #27ae60; }
+.top5-score.rating-medium { color: #e67e22; }
+.top5-score.rating-low { color: #c0392b; }
+
+.top5-evidence {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    text-align: center;
+    padding: 2px 4px;
+    border-radius: 3px;
+    background: #f4f6f7;
+    color: #7f8c8d;
+}
+
+.top5-evidence.ev-strong { background: #d5f5e3; color: #1e8449; }
+.top5-evidence.ev-moderate { background: #fdebd0; color: #b9770e; }
+.top5-evidence.ev-thin { background: #fadbd8; color: #943126; }
+
+.top5-empty {
+    color: #7f8c8d;
+    font-size: 0.9rem;
+    font-style: italic;
+    padding: 10px 4px;
+}
+
+.top5-note {
+    font-size: 0.78rem;
+    color: #7f8c8d;
+    margin-top: 8px;
+    padding: 6px 8px;
+    background: #f8f9f9;
+    border-left: 2px solid #d5dbdb;
+    border-radius: 0 3px 3px 0;
+}
+
+.strategy-note {
+    font-size: 0.82rem;
+    color: #566573;
+    line-height: 1.5;
+    background: #f4f6f7;
+    border-left: 3px solid #2ecc71;
+    border-radius: 0 4px 4px 0;
+    padding: 10px 14px;
+    margin: 16px 0 0;
+}
+
 .result-note {
     font-size: 0.85rem;
     color: #7f8c8d;
@@ -454,6 +662,19 @@ select:focus {
 @media (max-width: 640px) {
     .result {
         grid-template-columns: 1fr;
+    }
+
+    .top5-columns {
+        grid-template-columns: 1fr;
+    }
+
+    .top5-row {
+        grid-template-columns: 20px 1fr 48px 66px;
+    }
+
+    .panel-header {
+        flex-direction: column;
+        align-items: flex-start;
     }
 
     .quick-btn {

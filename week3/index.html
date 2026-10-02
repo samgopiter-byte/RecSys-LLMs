@@ -13,15 +13,61 @@
             <p>Memory-based neighbourhood CF over MovieLens 100K, computed in your browser</p>
         </header>
 
-        <main>
-            <div class="controls">
-                <div class="input-group">
-                    <label for="user-select">Select User:</label>
-                    <select id="user-select">
-                        <option value="">Loading users...</option>
-                    </select>
+            <main>
+            <!-- ============ PRIMARY VIEW: Top-5 for the active user ============ -->
+            <section class="panel primary-panel">
+                <div class="panel-header">
+                    <h2>Top-5 Recommendations</h2>
+                    <div class="user-picker">
+                        <label for="user-select">Active User:</label>
+                        <select id="user-select">
+                            <option value="">Loading users...</option>
+                        </select>
+                        <label for="topn-select" class="topn-label">Top</label>
+                        <select id="topn-select">
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                        </select>
+                        <button id="top5-btn" onclick="generateRecommendations()" disabled>Generate Top-5 Recommendations</button>
+                    </div>
                 </div>
 
+                <div id="top5-summary" class="top5-summary"></div>
+
+                <div class="top5-columns">
+                    <div class="top5-column">
+                        <div class="top5-column-header">User-Based CF</div>
+                        <div id="top5-user" class="top5-list-container">
+                            <div class="top5-empty">Select an active user and press Generate.</div>
+                        </div>
+                    </div>
+                    <div class="top5-column">
+                        <div class="top5-column-header">Item-Based CF</div>
+                        <div id="top5-item" class="top5-list-container">
+                            <div class="top5-empty">Select an active user and press Generate.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="strategy-note">
+                    Missing-value strategy: <strong>CO-RATED ONLY</strong> - missing ratings are never
+                    imputed, never replaced by 0 or by a mean; Pearson is computed only over movies
+                    both parties actually rated. Reliability weighting is an additional confidence
+                    control, not a second missing-value strategy. Movies the user already rated are
+                    never recommended, and no fallback rating is substituted when evidence is thin.
+                </p>
+            </section>
+
+            <!-- ============ SECONDARY: Prediction Inspector (advanced) ============ -->
+            <section class="panel inspector-panel">
+                <div class="panel-header">
+                    <h2>Prediction Inspector</h2>
+                    <p class="panel-subtitle">
+                        Inspect one user + movie pair in detail, including neighbour lists and guards.
+                    </p>
+                </div>
+
+            <div class="controls">
                 <div class="input-group">
                     <label for="movie-search">Search movie:</label>
                     <div class="search-row">
@@ -104,6 +150,7 @@
             </div>
 
             <div id="diagnostics" class="diagnostics"></div>
+            </section>
         </main>
     </div>
 

@@ -4,8 +4,70 @@ let ratings = [];
 let numUsers = 0;
 let numMovies = 0;
 
-// Movie data structure: { id: number, title: string, year: number }
+// Movie data structure: { id: number, title: string, year: number|null, genres: string[] }
 // Rating data structure: { userId: number, movieId: number, rating: number }
+
+// ---------------------------------------------------------------------------
+// MovieLens 100K `u.item` genre layout
+// ---------------------------------------------------------------------------
+// `u.item` is pipe-separated with 24 fields:
+//
+//   [0] movie id
+//   [1] movie title (e.g. "Toy Story (1995)")
+//   [2] release date
+//   [3] video release date
+//   [4] IMDb URL
+//   [5] reserved "unknown" attribute  <-- NOT a genre
+//   [6] ... [23]  the 18 real genre flags, in the fixed order below
+//
+// IMPORTANT: the genre block starts at field index 6, not 5. Field 5 is a
+// reserved flag that is always 0; including it shifts every genre label by one
+// position (Action <- unknown, Animation <- Action, ... Western <- War), which
+// produces a completely wrong genre set. Week 2 shipped exactly that off-by-one
+// bug and it was fixed there (commit 0a8f6c0); the same slice is used here so
+// the two weeks cannot disagree.
+//
+// The flag order below is the canonical MovieLens order and is positional - it
+// must match the column order in u.item exactly.
+// ---------------------------------------------------------------------------
+const MOVIELENS_GENRES = [
+    'Action',
+    'Adventure',
+    'Animation',
+    "Children's",
+    'Comedy',
+    'Crime',
+    'Documentary',
+    'Drama',
+    'Fantasy',
+    'Film-Noir',
+    'Horror',
+    'Musical',
+    'Mystery',
+    'Romance',
+    'Sci-Fi',
+    'Thriller',
+    'War',
+    'Western'
+];
+
+const ITEM_FIELD_COUNT = 24;
+const GENRE_FIELD_START = 6;   // field 5 is the reserved "unknown" attribute
+const GENRE_FIELD_END = 24;
+
+/**
+ * Read the 18 genre flags out of one already-split u.item record.
+ * Returns the genre names whose flag is 1, in canonical order.
+ */
+function parseGenresFromFields(fields) {
+    const genres = [];
+    for (let i = 0; i < MOVIELENS_GENRES.length; i++) {
+        if (parseInt(fields[GENRE_FIELD_START + i]) === 1) {
+            genres.push(MOVIELENS_GENRES[i]);
+        }
+    }
+    return genres;
+}
 
 async function loadData() {
     try {
@@ -53,10 +115,23 @@ function parseItemData(text) {
                 year = parseInt(titleMatch[2]);
             }
             
+            // Genres come from fields 6..23 only. See MOVIELENS_GENRES above for
+            // why field 5 must be excluded.
+            let genres = [];
+            if (parts.length >= ITEM_FIELD_COUNT) {
+                genres = parseGenresFromFields(parts);
+            } else {
+                console.warn(
+                    `[data] movie ${id} has only ${parts.length} fields, expected ` +
+                    `${ITEM_FIELD_COUNT}; genres left empty`
+                );
+            }
+
             movieData.push({
                 id: id,
                 title: title,
-                year: year
+                year: year,
+                genres: genres
             });
         }
     }

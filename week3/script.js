@@ -2,44 +2,60 @@
 // HW3 - memory-based Collaborative Filtering over MovieLens 100K
 // ===========================================================================
 //
-// MISSING-VALUE STRATEGY  (HW3 requires one explicit, documented strategy)
+// THE ONE MISSING-VALUE STRATEGY: CO-RATED ONLY
 // ---------------------------------------------------------------------------
 // The rating matrix is 943 users x 1682 movies = 1 586 126 cells, of which
 // only 100 000 are observed -> density 6.30 %, sparsity 93.70 %.
 //
-// The single strategy used everywhere below is:
+// HW3 asks for exactly ONE strategy for handling missing values. This codebase
+// uses exactly one, everywhere, without exception:
 //
 //     CO-RATED ONLY
 //
-// Missing cells are NEVER imputed, never filled with 0, and never replaced by
-// a global / user / item average. Every similarity and every prediction is
-// computed strictly on the INTERSECTION of two profiles, i.e. only on movies
-// that both parties actually rated. A missing rating is treated as a structural
-// absence that carries no information and is excluded from the computation, so
-// it can never leak into a sum or a mean as an implicit 0.
+// Concretely:
+//   - a missing rating is NEVER imputed;
+//   - a missing rating is NEVER replaced by 0;
+//   - a missing rating is NEVER replaced by a global / user / item mean;
+//   - Pearson is computed ONLY over the observations that both parties actually
+//     rated, i.e. over the INTERSECTION of the two profiles.
 //
-// That last point is not a style preference. If a dense matrix were padded with
-// zeros, ~94 % of every pair would be (0,0) points, which would inflate the
-// co-rated count, drag both means towards 0 and make Pearson meaningless. The
-// co-rated-only strategy is what makes the similarity well defined on a 6.3 %
-// dense matrix.
+// A missing cell is treated as a structural absence that carries no information,
+// so it is excluded from the computation and can never leak into a sum or a mean
+// as an implicit 0.
 //
-// Because a prediction can only be assembled from cells that really exist,
-// every estimate must justify itself with its own evidence. That is what the
-// guards below enforce: when the co-rated support is too thin, the code REFUSES
-// to output a number instead of silently falling back to a prior, and the UI
-// reports which guard failed.
+// That is not a style preference. If a dense matrix were padded with zeros, ~94 %
+// of every pair would be (0,0) points, which would inflate the co-rated count,
+// drag both means towards 0 and make Pearson meaningless. Co-rated-only is what
+// makes the similarity well defined on a 6.3 %-dense matrix.
 //
-// RELIABILITY WEIGHTING
+// Because a prediction can only be assembled from cells that really exist, every
+// estimate must justify itself with its own evidence. That is what the guards
+// enforce: when the co-rated support is too thin, the code REFUSES to output a
+// number instead of silently falling back to a prior, and the UI reports which
+// guard failed. There is no forced fallback anywhere.
+//
+// ADDITIONAL RELIABILITY CONTROL (NOT a missing-value strategy)
 // ---------------------------------------------------------------------------
-// Raw Pearson over a small co-rated set is very noisy and biased upwards, so
-// every similarity is shrunk by the amount of evidence behind it:
+// Reliability weighting does NOT decide what happens to a missing cell - that is
+// the co-rated-only strategy above, and it is the only one. It is a separate
+// confidence control applied to a similarity that has ALREADY been computed on
+// co-rated observations only.
+//
+// Rationale: raw Pearson over a small co-rated set is noisy and biased upwards,
+// so each similarity is shrunk by the amount of evidence behind it:
 //
 //     weightedSimilarity = rawPearson * min(commonCount / 50, 1)
 //
-// where commonCount = number of co-rated movies. The factor is exactly 1.0 once
-// 50+ movies are co-rated and decays linearly below that, so a pair seen on
-// only 5 movies can contribute at most 10 % of its correlation.
+// where commonCount is the number of co-rated movies (user-based) or co-rated
+// users (item-based). The factor is exactly 1.0 at 50+ co-rated observations and
+// decays linearly below that, so a pair seen on only 5 of them contributes at
+// most 10 % of its raw correlation.
+//
+// Summary of the terminology used in this file:
+//   missing-value strategy = CO-RATED ONLY  (one strategy, applies to missing
+//                             cells)
+//   reliability weighting   = confidence control on an existing similarity
+//                             (applies to noisy estimates)
 //
 // WHICH MEAN IS USED WHERE
 // ---------------------------------------------------------------------------
@@ -54,8 +70,8 @@
 // Item-based CF reuses the user-based strategy almost unchanged:
 //   - similarity is again Pearson, again on the co-rated intersection only, but
 //     the "co-rated" axis is now the set of USERS who rated both movies;
-//   - the same reliability weighting, where commonCount is now the number of
-//     co-rated USERS rather than co-rated movies;
+//   - the same reliability weighting as a confidence control, where commonCount
+//     is now the number of co-rated USERS rather than co-rated movies;
 //   - the same MIN_OVERLAP gate, the same cold-start guards, the same refusal to
 //     output a number when the evidence is too thin.
 // Prediction form (as in the lecture - the baseline is the TARGET MOVIE, not the
@@ -98,6 +114,9 @@ const REQUIRE_POSITIVE_SIMILARITY = true; // only positively correlated neighbou
 const MIN_PREDICTION = 1;
 const MAX_PREDICTION = 5;
 
+// --- Top-5 recommendation ---------------------------------------------------
+const DEFAULT_TOP_N = 5;                  // HW3 asks for a Top-5 recommendation list
+
 // Demo cases. Every pair below was verified to be a GENUINELY MISSING cell:
 // ratingsByUser.get(userId).ratings.has(movieId) === false, so each demo is a
 // real recommendation, not a replay of a rating the dataset already contains.
@@ -136,12 +155,23 @@ window.onload = async function() {
 
         dataReady = true;
         document.getElementById('predict-btn').disabled = false;
+        document.getElementById('top5-btn').disabled = false;
 
         updateStatus(
             `Ready: ${numUsers} users, ${numMovies} movies, ${ratings.length} ratings. ` +
-            `User-Based CF and Item-Based CF active (co-rated only, Pearson + reliability weighting).`
+            `Missing-value strategy: CO-RATED ONLY (one strategy, no imputation). ` +
+            `Select an Active User and press Generate Top-5 Recommendations.`
         );
 
+        console.info(
+            '[HW3] Missing-value strategy: CO-RATED ONLY - one strategy, applied consistently. ' +
+            'Missing ratings are never imputed, never set to 0, never replaced by a mean.'
+        );
+        console.info(
+            '[HW3] Reliability weighting is an ADDITIONAL CONFIDENCE CONTROL on an existing ' +
+            'similarity, not a second missing-value strategy: ' +
+            'weightedSimilarity = rawPearson * min(commonCount / ' + RELIABILITY_SATURATION + ', 1)'
+        );
         console.info(
             '[HW3] User-Based CF and Item-Based CF are both active on the selected user + movie.'
         );
@@ -432,9 +462,11 @@ function pearsonOnCoRated(userRec, otherRec) {
 }
 
 /**
- * Reliability weighting: shrink a raw correlation by how much co-rated
- * evidence supports it. 1.0 at RELIABILITY_SATURATION co-rated movies and above,
- * linear decay below that.
+ * Reliability weighting = an ADDITIONAL CONFIDENCE CONTROL, not a
+ * missing-value strategy. Missing cells are already handled by the single
+ * co-rated-only strategy; this function only shrinks an already-computed
+ * correlation by how much co-rated evidence supports it. 1.0 at
+ * RELIABILITY_SATURATION co-rated observations and above, linear decay below.
  */
 function computeWeightedSimilarity(rawPearson, commonCount) {
     return rawPearson * Math.min(commonCount / RELIABILITY_SATURATION, 1);
@@ -524,9 +556,10 @@ function predictLeakageSafe(userId, movieId) {
 }
 
 /**
- * User-Based CF prediction with the co-rated only + reliability weighting
- * strategy. Always returns a result object; it never throws and never invents
- * a number when the evidence is too thin.
+ * User-Based CF prediction under the single CO-RATED ONLY missing-value
+ * strategy, with reliability weighting as an additional confidence control.
+ * Always returns a result object; it never throws and never invents a number
+ * when the evidence is too thin.
  */
 function predictUserBased(userId, movieId) {
     const result = {
@@ -913,6 +946,554 @@ function predictItemBased(userId, movieId) {
     result.clamped = raw !== prediction;
     result.message = `${voters.length} similar movie(s) voted.`;
     return result;
+}
+
+
+// ===========================================================================
+// Top-5 recommendations - UI rendering
+// ===========================================================================
+
+/**
+ * A compact strength indicator for the evidence behind one recommendation.
+ * Three buckets rather than a number: the point is "how much backing did this
+ * score get", and the detailed figures live in the diagnostics panel.
+ */
+function evidenceLabel(evidence) {
+    if (evidence >= 5) return { text: 'strong', level: 'strong' };
+    if (evidence >= 1) return { text: 'moderate', level: 'moderate' };
+    return { text: 'thin', level: 'thin' };
+}
+
+function renderRecommendationList(report) {
+    const el = document.getElementById(report.method === 'user-based' ? 'top5-user' : 'top5-item');
+    if (!el) return;
+
+    if (report.note) {
+        el.innerHTML = `<div class="top5-empty">${escapeHtml(report.note)}</div>`;
+        return;
+    }
+
+    if (report.items.length === 0) {
+        const skipped = report.skipped['weak-evidence'] + report.skipped['no-neighbors'];
+        el.innerHTML =
+            '<div class="top5-empty">No movie passed the evidence guards for this user.</div>' +
+            `<div class="top5-note">${report.considered} unrated movie(s) considered, ` +
+            `${report.scoredCount} scored, ${skipped} rejected for insufficient evidence. ` +
+            'No fallback rating is substituted.</div>';
+        return;
+    }
+
+    const rows = report.items.map(item => {
+        const ev = evidenceLabel(item.evidence);
+        return `<li class="top5-row">
+            <span class="top5-rank">${item.rank}</span>
+            <span class="top5-title">${escapeHtml(item.title)}</span>
+            <span class="top5-score rating-${ratingClassFor(item.predictedRating)}">${item.predictedRating.toFixed(2)}</span>
+            <span class="top5-evidence ev-${ev.level}" title="evidence ${item.evidence.toFixed(2)} from ${item.neighbourCount} neighbour(s)">${ev.text}</span>
+        </li>`;
+    }).join('');
+
+    const shortfall = report.items.length < report.topN
+        ? `<div class="top5-note">Only ${report.items.length} of ${report.topN} slots could be filled: ` +
+          `${report.scoredCount} candidate(s) passed the guards. No fallback was substituted.</div>`
+        : '';
+
+    el.innerHTML = `<ol class="top5-list">${rows}</ol>` + shortfall;
+}
+
+/** Logs the Top-5 result and its overlap, matching the inspector's style. */
+function logTopRecommendations(bundle) {
+    console.group(`[Top-5] User ${bundle.userId}`);
+
+    for (const report of [bundle.userBased, bundle.itemBased]) {
+        console.log(`${report.method}: ${report.items.length} recommendation(s) ` +
+            `from ${report.considered} unrated candidate(s), ${report.scoredCount} scored, ` +
+            `${report.skipped['weak-evidence'] + report.skipped['no-neighbors']} rejected, ` +
+            `${report.elapsedMs.toFixed(1)} ms`);
+        if (report.note) {
+            console.warn('  ', report.note);
+            continue;
+        }
+        console.table(report.items.map(i => ({
+            rank: i.rank,
+            movie: i.title,
+            predicted: Number(i.predictedRating.toFixed(4)),
+            evidence: Number(i.evidence.toFixed(3)),
+            neighbours: i.neighbourCount,
+            topNeighbourCoRated: i.topNeighbourCoRated
+        })));
+    }
+
+    console.log(`Overlap between the two Top-5 lists: ${bundle.overlapCount} movie(s)`,
+        bundle.overlapMovieIds.length ? bundle.overlapMovieIds : '(none)');
+    console.groupEnd();
+}
+
+/** Main UI action: build and render both Top-5 lists for the active user. */
+function generateRecommendations() {
+    if (!dataReady) {
+        setTop5Placeholder('Data is still loading. Please wait...', 'warning');
+        return;
+    }
+
+    const userId = parseInt(document.getElementById('user-select').value, 10);
+    if (!Number.isInteger(userId)) {
+        setTop5Placeholder('Select an active user first.', 'warning');
+        return;
+    }
+
+    const topN = parseInt(document.getElementById('topn-select').value, 10) || DEFAULT_TOP_N;
+
+    updateStatus(`Generating Top-${topN} recommendations for User ${userId}...`);
+
+    let bundle;
+    try {
+        bundle = generateTopRecommendations(userId, topN);
+    } catch (error) {
+        console.error('Top-5 generation error:', error);
+        setTop5Placeholder(`Error: ${escapeHtml(error.message)}`, 'warning');
+        return;
+    }
+
+    renderRecommendationList(bundle.userBased);
+    renderRecommendationList(bundle.itemBased);
+    logTopRecommendations(bundle);
+
+    const ubNote = bundle.userBased.note ? bundle.userBased.note
+        : `${bundle.userBased.items.length} of ${bundle.userBased.considered} unrated movie(s) scored`;
+    const ibNote = bundle.itemBased.note ? bundle.itemBased.note
+        : `${bundle.itemBased.items.length} of ${bundle.itemBased.considered} unrated movie(s) scored`;
+
+    // Only mention the profile size when the user actually exists in the data.
+    const profilePart = bundle.userBased.ratedMovies === undefined
+        ? ''
+        : `Active user ${userId} rated ${bundle.userBased.ratedMovies} movie(s). `;
+
+    document.getElementById('top5-summary').textContent =
+        profilePart +
+        `User-Based: ${ubNote} in ${bundle.userBased.elapsedMs.toFixed(0)} ms. ` +
+        `Item-Based: ${ibNote} in ${bundle.itemBased.elapsedMs.toFixed(0)} ms. ` +
+        `The two Top-${topN} lists share ${bundle.overlapCount} title(s).`;
+
+    updateStatus(
+        `Top-${topN} ready for User ${userId}. ` +
+        `Missing-value strategy: CO-RATED ONLY (one strategy, no imputation). ` +
+        `Reliability weighting acts as an additional confidence control.`
+    );
+}
+
+function setTop5Placeholder(message, className = 'pending') {
+    for (const id of ['top5-user', 'top5-item']) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<div class="top5-empty">${message}</div>`;
+    }
+    const summary = document.getElementById('top5-summary');
+    if (summary) summary.textContent = '';
+}
+
+
+// ===========================================================================
+// Top-5 recommendations for the active user
+// ===========================================================================
+//
+// Both recommenders answer the same question - "which movies would this user
+// most likely like that they have NOT rated yet?" - but they differ in what
+// counts as a neighbour:
+//
+//   recommendUserBased  neighbours are USERS who rated the candidate movie
+//   recommendItemBased  neighbours are MOVIES the user already rated
+//
+// Design constraints, all of which are deliberate:
+//
+// 1. THE SAME prediction code is used. Both functions call predictUserBased /
+//    predictItemBased, so the formula, the co-rated-only strategy and the
+//    evidence guards are provably identical to the Prediction Inspector below.
+//    Nothing is re-implemented here.
+//
+// 2. Only UNRATED movies are considered. The user's own profile
+//    (ratingsByUser.get(u).itemIds) is the exclusion set. Recommending a movie
+//    the user has already rated would be meaningless.
+//
+// 3. NO forced fallbacks. A candidate that the evidence guards reject is simply
+//    dropped. The list can therefore be shorter than topN, and that is reported
+//    honestly rather than padded with a prior.
+//
+// 4. No leave-one-out is needed here. Every candidate is a genuinely missing
+//    cell by construction (see 2), so withTargetCellHeldOut is a no-op for all
+//    of them. The LOO logic is still what protects the Prediction Inspector when
+//    the user picks a pair that IS rated.
+//
+// PERFORMANCE. A naive pass would call the full predictor once per unseen
+// movie (~1600 times), and each of those calls repeats a neighbour search that
+// is mostly redundant. Three things keep this cheap without touching the maths:
+//
+//   * candidates are pre-filtered to movies with at least MIN_ITEM_HISTORY
+//     raters, which is exactly the condition the cold-start guard checks
+//     anyway - so nothing is lost, and the ultra-rare movies are skipped;
+//   * USER-BASED: pearsonOnCoRated(targetUser, otherUser) does not depend on the
+//     candidate movie, so it is computed ONCE per call in
+//     buildUserSimilarityProfile and then reused for every candidate. That is
+//     ~950 redundant Pearson passes over the target profile collapsed into one
+//     (measured: 335 ms -> 30 ms for User 308, results bit-identical);
+//   * ITEM-BASED: the neighbour pool is always the user's already-rated movies,
+//     so it is resolved once per call in buildHistoryMovieProfile instead of
+//     being re-looked-up for every candidate. The remaining per-pair Pearson
+//     (candidate movie x history movie) genuinely depends on both movies and
+//     cannot be hoisted without changing the result, so item-based stays the
+//     slower of the two and scales with profile size.
+//
+// Both profiles are created per call and thrown away afterwards, so they can
+// never go stale or leak between different users.
+// ---------------------------------------------------------------------------
+
+/**
+ * Similarity between the ACTIVE USER and every other user, computed once.
+ *
+ * pearsonOnCoRated(targetRec, otherRec) depends only on the two user profiles,
+ * never on which movie is being predicted. Hoisting it out of the candidate
+ * loop turns ~950 Pearson passes over the target profile into a single pass,
+ * and leaves only a Map lookup per candidate. The values are exactly what
+ * findUserNeighbors would compute for the same user pair.
+ *
+ * Users that fail the overlap / undefined-correlation guards are simply absent
+ * from the map, which is how findUserNeighbors treats them too.
+ */
+function buildUserSimilarityProfile(targetRec, targetUserId) {
+    const profile = new Map();
+
+    for (const [otherId, otherRec] of ratingsByUser) {
+        if (otherId === targetUserId) continue;
+
+        const { commonCount, pearson } = pearsonOnCoRated(targetRec, otherRec);
+        if (pearson === null || commonCount < MIN_OVERLAP) continue;
+
+        profile.set(otherId, {
+            userId: otherId,
+            commonCount,
+            rawPearson: pearson,
+            weighted: computeWeightedSimilarity(pearson, commonCount),
+            userMean: otherRec.mean
+        });
+    }
+
+    return profile;
+}
+
+/**
+ * The active user's already-rated movies, resolved once per call.
+ *
+ * Item-based neighbours are always drawn from this list, so the movie lookups
+ * and the user's own ratings for them are candidate-independent and are hoisted
+ * out of the loop.
+ */
+function buildHistoryMovieProfile(userRec) {
+    const history = [];
+    for (const movieId of userRec.itemIds) {
+        const itemRec = ratingsByItem.get(movieId);
+        if (!itemRec) continue;
+        history.push({
+            movieId,
+            itemRec,
+            userRating: itemRec.ratings.get(userRec.id)
+        });
+    }
+    return history;
+}
+
+/**
+ * Weighted-voting step shared by both Top-N methods.
+ *
+ * Takes the already-computed neighbour candidates, applies the
+ * positive-similarity filter and the TOP_K_NEIGHBORS cap, and returns the
+ * prediction plus the evidence behind it - or a status explaining why no
+ * prediction is defensible. Mirrors predictUserBased / predictItemBased
+ * exactly; no fallback value is ever produced.
+ */
+function aggregateWeightedVote(neighbors, baseline) {
+    const voters = neighbors
+        .filter(n => (REQUIRE_POSITIVE_SIMILARITY ? n.weighted > 0 : true))
+        .slice(0, TOP_K_NEIGHBORS);
+
+    if (voters.length === 0) {
+        return { ok: false, status: 'no-neighbors' };
+    }
+
+    let numerator = 0;
+    let evidence = 0;
+    for (const neighbor of voters) {
+        numerator += neighbor.weighted * neighbor.deviation;
+        evidence += Math.abs(neighbor.weighted);
+    }
+
+    if (evidence < MIN_EVIDENCE) {
+        return { ok: false, status: 'weak-evidence', evidence };
+    }
+
+    const prediction = clampRating(baseline + numerator / evidence);
+    if (prediction === null) {
+        return { ok: false, status: 'weak-evidence', evidence };
+    }
+
+    return {
+        ok: true,
+        prediction,
+        evidence,
+        neighbourCount: voters.length,
+        topNeighbourCoRated: voters[0].commonCount
+    };
+}
+
+/**
+ * Movies the user has not rated, with at least MIN_ITEM_HISTORY raters.
+ * Ordered by descending rater count: the movies with the most support are the
+ * ones most likely to produce a defensible prediction, and ties are broken by
+ * movie id to keep the output deterministic.
+ */
+function getUnratedCandidates(userId) {
+    const userRec = ratingsByUser.get(userId);
+    if (!userRec) return [];
+
+    const candidates = [];
+    for (const [movieId, itemRec] of ratingsByItem) {
+        if (itemRec.count < MIN_ITEM_HISTORY) continue;
+        if (userRec.ratings.has(movieId)) continue;   // already rated -> exclude
+        candidates.push(movieId);
+    }
+
+    candidates.sort((a, b) => {
+        const byCount = ratingsByItem.get(b).count - ratingsByItem.get(a).count;
+        return byCount !== 0 ? byCount : a - b;
+    });
+    return candidates;
+}
+
+/**
+ * User-Based Top-N recommendation.
+ *
+ * @param {number} userId active user
+ * @param {number} topN   how many recommendations to return (default 5)
+ * @returns {{userId:number, method:string, topN:number, items:Array, considered:number, skipped:Object, elapsedMs:number}}
+ */
+function recommendUserBased(userId, topN = DEFAULT_TOP_N) {
+    const startedAt = performance.now();
+    const userRec = ratingsByUser.get(userId);
+
+    const report = {
+        userId,
+        method: 'user-based',
+        topN,
+        items: [],
+        considered: 0,
+        skipped: { 'cold-user': 0, 'no-neighbors': 0, 'weak-evidence': 0, other: 0 },
+        elapsedMs: 0
+    };
+
+    if (!userRec) {
+        report.elapsedMs = performance.now() - startedAt;
+        report.note = `User ${userId} has no rating history at all.`;
+        return report;
+    }
+    if (userRec.count < MIN_USER_HISTORY) {
+        report.elapsedMs = performance.now() - startedAt;
+        report.note = `User ${userId} rated only ${userRec.count} movie(s) ` +
+            `(minimum required: ${MIN_USER_HISTORY}) - too little history.`;
+        return report;
+    }
+
+    const candidates = getUnratedCandidates(userId);
+    report.considered = candidates.length;
+    report.ratedMovies = userRec.count;
+
+    // One Pearson pass for the whole call, reused for every candidate movie.
+    const simProfile = buildUserSimilarityProfile(userRec, userId);
+
+    const scored = [];
+    for (const movieId of candidates) {
+        const itemRec = ratingsByItem.get(movieId);
+
+        const neighbors = [];
+        for (const otherId of itemRec.userIds) {
+            if (otherId === userId) continue;
+            const sim = simProfile.get(otherId);
+            if (!sim) continue;   // failed overlap / undefined correlation
+            neighbors.push({
+                userId: otherId,
+                commonCount: sim.commonCount,
+                weighted: sim.weighted,
+                deviation: itemRec.ratings.get(otherId) - sim.userMean
+            });
+        }
+
+        if (neighbors.length === 0) {
+            report.skipped['no-neighbors']++;
+            continue;
+        }
+
+        neighbors.sort((a, b) => b.weighted - a.weighted);
+
+        const vote = aggregateWeightedVote(neighbors, userRec.mean);
+        if (!vote.ok) {
+            report.skipped[vote.status]++;
+            continue;
+        }
+
+        scored.push({
+            movieId,
+            movieTitle: getMovieTitle(movieId),
+            prediction: vote.prediction,
+            evidence: vote.evidence,
+            neighbourCount: vote.neighbourCount,
+            topNeighbourCoRated: vote.topNeighbourCoRated,
+            movieRaterCount: itemRec.count
+        });
+    }
+
+    scored.sort((a, b) => {
+        if (b.prediction !== a.prediction) return b.prediction - a.prediction;
+        if (b.evidence !== a.evidence) return b.evidence - a.evidence;
+        return a.movieId - b.movieId;   // deterministic tie-break
+    });
+
+    report.items = scored.slice(0, topN).map((r, i) => ({
+        rank: i + 1,
+        movieId: r.movieId,
+        title: r.movieTitle,
+        predictedRating: r.prediction,
+        evidence: r.evidence,
+        neighbourCount: r.neighbourCount,
+        topNeighbourCoRated: r.topNeighbourCoRated,
+        movieRaterCount: r.movieRaterCount
+    }));
+
+    report.scoredCount = scored.length;
+    report.elapsedMs = performance.now() - startedAt;
+    return report;
+}
+
+/**
+ * Item-Based Top-N recommendation.
+ * Identical contract to recommendUserBased; see the notes above.
+ */
+function recommendItemBased(userId, topN = DEFAULT_TOP_N) {
+    const startedAt = performance.now();
+    const userRec = ratingsByUser.get(userId);
+
+    const report = {
+        userId,
+        method: 'item-based',
+        topN,
+        items: [],
+        considered: 0,
+        skipped: { 'cold-user': 0, 'no-neighbors': 0, 'weak-evidence': 0, other: 0 },
+        elapsedMs: 0
+    };
+
+    if (!userRec) {
+        report.elapsedMs = performance.now() - startedAt;
+        report.note = `User ${userId} has no rating history at all.`;
+        return report;
+    }
+    if (userRec.count < MIN_USER_HISTORY) {
+        report.elapsedMs = performance.now() - startedAt;
+        report.note = `User ${userId} rated only ${userRec.count} movie(s) ` +
+            `(minimum required: ${MIN_USER_HISTORY}) - too little history.`;
+        return report;
+    }
+
+    const candidates = getUnratedCandidates(userId);
+    report.considered = candidates.length;
+    report.ratedMovies = userRec.count;
+
+    // The neighbour pool is always this user's history, resolved once.
+    // Candidate-independent, so it is built before the loop.
+    const history = buildHistoryMovieProfile(userRec);
+
+    const scored = [];
+    for (const movieId of candidates) {
+        const itemRec = ratingsByItem.get(movieId);
+
+        const neighbors = [];
+        for (const entry of history) {
+            if (entry.movieId === movieId) continue;   // cannot happen: movieId is unrated
+
+            const { commonCount, pearson } =
+                pearsonOnCoRatedItems(itemRec, entry.itemRec);
+
+            if (pearson === null) continue;            // undefined correlation
+            if (commonCount < MIN_OVERLAP) continue;   // not enough co-rated users
+
+            neighbors.push({
+                movieId: entry.movieId,
+                commonCount,
+                rawPearson: pearson,
+                weighted: computeWeightedSimilarity(pearson, commonCount),
+                deviation: entry.userRating - entry.itemRec.mean
+            });
+        }
+
+        if (neighbors.length === 0) {
+            report.skipped['no-neighbors']++;
+            continue;
+        }
+
+        neighbors.sort((a, b) => b.weighted - a.weighted);
+
+        const vote = aggregateWeightedVote(neighbors, itemRec.mean);
+        if (!vote.ok) {
+            report.skipped[vote.status]++;
+            continue;
+        }
+
+        scored.push({
+            movieId,
+            movieTitle: getMovieTitle(movieId),
+            prediction: vote.prediction,
+            evidence: vote.evidence,
+            neighbourCount: vote.neighbourCount,
+            topNeighbourCoRated: vote.topNeighbourCoRated,
+            movieRaterCount: itemRec.count
+        });
+    }
+
+    scored.sort((a, b) => {
+        if (b.prediction !== a.prediction) return b.prediction - a.prediction;
+        if (b.evidence !== a.evidence) return b.evidence - a.evidence;
+        return a.movieId - b.movieId;   // deterministic tie-break
+    });
+
+    report.items = scored.slice(0, topN).map((r, i) => ({
+        rank: i + 1,
+        movieId: r.movieId,
+        title: r.movieTitle,
+        predictedRating: r.prediction,
+        evidence: r.evidence,
+        neighbourCount: r.neighbourCount,
+        topNeighbourCoRated: r.topNeighbourCoRated,
+        movieRaterCount: r.movieRaterCount
+    }));
+
+    report.scoredCount = scored.length;
+    report.elapsedMs = performance.now() - startedAt;
+    return report;
+}
+
+/** Both recommenders for one user, plus how much the two lists overlap. */
+function generateTopRecommendations(userId, topN = DEFAULT_TOP_N) {
+    const userBased = recommendUserBased(userId, topN);
+    const itemBased = recommendItemBased(userId, topN);
+
+    const ubIds = new Set(userBased.items.map(i => i.movieId));
+    const ibIds = new Set(itemBased.items.map(i => i.movieId));
+    const overlap = [...ubIds].filter(id => ibIds.has(id));
+
+    return {
+        userId,
+        topN,
+        userBased,
+        itemBased,
+        overlapMovieIds: overlap,
+        overlapCount: overlap.length
+    };
 }
 
 

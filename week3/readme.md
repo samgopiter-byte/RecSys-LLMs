@@ -1,96 +1,112 @@
 # HW3 Implementation Note
 
-The original Week 3 starter project used Matrix Factorization with TensorFlow.js.
+## What this project is
 
-For HW3, I adapted the existing starter project to implement memory-based Collaborative Filtering with both User-Based CF and Item-Based CF.
+A memory-based collaborative filtering recommender for MovieLens 100K, running
+entirely in the browser with plain JavaScript. No TensorFlow.js, no Matrix
+Factorization, no server.
 
-The implementation uses Pearson correlation on co-rated observations, reliability weighting based on the number of common ratings, explicit cold-start and sparsity handling, and a UI for comparing both prediction methods.
+Two independent neighbourhood methods are implemented and always shown side by
+side:
 
-I also added movie search, quick demonstration examples, and diagnostic information to make the behaviour of both algorithms easier to inspect.
+- **User-Based CF** — find users similar to the active user, then predict from
+  the ratings those users gave the target movie.
+- **Item-Based CF** — find movies similar to the target movie (measured over
+  co-raters), then predict from how the active user rated those movies.
 
----
-You are an expert full-stack web developer specializing in in-browser machine learning with TensorFlow.js.
+The original Week 3 starter used Matrix Factorization with TensorFlow.js. HW3
+requires memory-based neighbourhood CF, so the starter was adapted rather than
+extended; no TensorFlow code is loaded or referenced.
 
-Your task is to generate the complete code for a "Matrix Factorization Movie Recommender" web application. The application will load and parse data, define and train a Matrix Factorization model using TensorFlow.js, and then use the trained model to predict movie ratings. Please provide the code for each of the four filesâ€”`index.html`, `style.css`, `data.js`, and `script.js`â€”separately and clearly labeled.
+## Files
 
----
+| File | Contents |
+| --- | --- |
+| `index.html` | Two panels: the primary Top-5 view and the secondary Prediction Inspector. |
+| `style.css` | Layout, including the two equal-width Top-5 columns. |
+| `data.js` | `loadData()`, `parseItemData()`, `parseRatingData()`, the rating indexes, the leave-one-out helpers, and the MovieLens genre parser. |
+| `script.js` | Pearson similarity, both predictors, the Top-5 recommenders, and the UI. |
+| `u.data` / `u.item` | Original MovieLens 100K files, **unmodified**. |
 
-### **Project Specification: Matrix Factorization Recommender with TensorFlow.js**
+## The main view: Top-5 recommendations
 
-#### **1. CONTEXT**
+1. Pick an **Active User**.
+2. Press **Generate Top-5 Recommendations** (the list length is also switchable
+   to 10).
+3. Both methods render their own ranked list, and the summary line reports how
+   many candidates were considered, how many produced a defensible prediction,
+   how long each method took, and how many titles the two lists share.
 
-The goal is to build a web application that demonstrates Matrix Factorization for collaborative filtering. It will parse the MovieLens 100K dataset (`u.item`, `u.data` from the same url), train a model entirely in the browser using TensorFlow.js, and predict a user's rating for a selected movie. The logic must be modular, split between `data.js` and `script.js`.
+Only movies the user has **not** rated are eligible. Movies with fewer than
+`MIN_ITEM_HISTORY` raters are skipped up front, which is the same condition the
+cold-start guard would reject anyway, so nothing is lost.
 
-#### **2. OUTPUT FORMAT**
+If fewer than five movies survive the evidence guards, the list is shown
+shorter and the shortfall is stated. **No fallback rating is ever substituted**
+for a prediction the evidence does not support.
 
-Provide four separate, complete code blocks for the following files:
-1.  `index.html`
-2.  `style.css`
-3.  `data.js`
-4.  `script.js`
+## The Prediction Inspector (secondary view)
 
-#### **3. `index.html` INSTRUCTIONS**
+Below the Top-5 view, the inspector explains a single user + movie pair:
+neighbour lists, weighted similarities, co-rated counts, evidence, and which
+guard rejected the prediction when one does. Movie search, the three quick
+examples, and the collapsible diagnostics panel all live here.
 
--   The page must have a title, a main heading, and two dropdown menus: one for selecting a user (`#user-select`) and one for selecting a movie (`#movie-select`).
--   Include a "Predict Rating" button that calls a `predictRating()` function.
--   A result area (`#result`) should display status messages and prediction outcomes.
--   Critically, it must load the TensorFlow.js library from a CDN, followed by `data.js`, and then `script.js` at the end of the `<body>`.
-    ```
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
-    <script src="data.js"></script>
-    <script src="script.js"></script>
-    ```
+## Missing-value strategy
 
-#### **4. `style.css` INSTRUCTIONS**
+There is exactly **one** missing-value strategy:
 
--   Create a clean, modern, and centered layout. The design should be professional and user-friendly. (Detailed styling specifications are the same as previous exercises).
+> **CO-RATED ONLY** — missing ratings are never imputed, never replaced by `0`,
+> never replaced by a mean. Pearson is computed only over movies (or users) that
+> both parties actually rated.
 
-#### **5. `data.js` INSTRUCTIONS**
+Reliability weighting
 
--   This file is responsible for loading and parsing data.
--   It must contain the `loadData()`, `parseItemData(text)`, and `parseRatingData(text)` functions as specified previously.
--   It should also contain two variables to store the number of unique users and movies after parsing, for example: `numUsers` and `numMovies`.
+```
+weightedSimilarity = rawPearson * min(commonCount / 50, 1)
+```
 
-#### **6. `script.js` INSTRUCTIONS**
+is an **additional confidence control** applied to an already-computed
+similarity, not a second missing-value strategy.
 
-This file contains the TensorFlow.js model definition, training, and prediction logic.
+## Target leakage
 
-1.  **Global Variables:**
-    -   Declare a global variable `model` to hold the trained TensorFlow.js model.
+When the Inspector is asked about a pair that *is* rated, the target cell is
+temporarily removed from both profiles (`withTargetCellHeldOut`) before any mean,
+overlap, or Pearson value is computed, and restored in a `finally` block. The
+original `ratings` array is never mutated. Genuine missing pairs are untouched
+by this and are ordinary recommendation predictions.
 
-2.  **Initialization (`window.onload`):**
-    -   Create an `async` function that first `await`s `loadData()` from `data.js`.
-    -   After data is loaded, it should call functions to populate the user and movie dropdowns.
-    -   Then, it must call a new `trainModel()` function to start the training process. Update the UI to show that the model is training.
+## CF constants
 
-3.  **Model Definition Function: `createModel(numUsers, numMovies, latentDim)`**
-    -   This function will define the Matrix Factorization architecture.
-    -   **Inputs:** Create two input layers, one for user IDs (`userInput`) and one for movie IDs (`movieInput`).
-    -   **Embedding Layers:**
-        -   ?????
-        -   ?????
-    -   **Latent Vectors:** ????
-    -   **Prediction:** ????
-    -   **Model Creation:** Create the `tf.model` with the defined inputs and the prediction output.
-    -   **Return** the created model.
+```
+MIN_OVERLAP            = 3     min co-rated observations for a pair to count
+RELIABILITY_SATURATION = 50    co-rated count at which the weight reaches 1.0
+TOP_K_NEIGHBORS        = 50    how many best-scoring neighbours may vote
+MIN_USER_HISTORY       = 5     user-side cold-start guard
+MIN_ITEM_HISTORY       = 5     item-side cold-start guard
+MIN_EVIDENCE           = 0.5   min sum of |weighted similarity| to accept
+```
 
-4.  **Training Function: `trainModel()`**
-    -   This must be an `async` function.
-    -   **Step 1:** Call `createModel()` to get the model architecture.
-    -   **Step 2:** Compile the model using `model.compile()`.
-        -   Set the `optimizer` to `tf.train.adam(0.001)`.
-        -   Set the `loss` function to `'meanSquaredError'`.
-    -   **Step 3:** Prepare the training data. Convert the `ratings` data (user IDs, item IDs) and the actual ratings into TensorFlow tensors (`tf.tensor2d`).
-    -   **Step 4:** Train the model by calling `await model.fit()`. Train for a suitable number of epochs (e.g., 5-10) with a reasonable batch size (e.g., 64).
-    -   **Step 5:** After training is complete, update the UI to indicate that the model is ready for predictions.
+## Performance
 
-5.  **Prediction Function: `predictRating()`**
-    -   This `async` function is called when the user clicks the button.
-    -   Get the selected user ID and movie ID from the dropdowns.
-    -   Create input tensors for the selected user and movie IDs.
-    -   Call `model.predict()` with these tensors.
-    -   Use `.data()` to extract the predicted rating value from the output tensor.
-    -   Display the predicted rating in the `#result` area in a user-friendly format.
+The Top-5 pass does not call the full predictor once per unseen movie.
 
----
-Now generate the complete code for `index.html`, `style.css`, `data.js`, and `script.js` based on these final, detailed specifications for a TensorFlow.js implementation.
+- Candidates are pre-filtered to movies with enough raters.
+- For **User-Based**, `pearsonOnCoRated(activeUser, otherUser)` does not depend
+  on the candidate movie, so it is computed once per call and reused for every
+  candidate (~335 ms → ~30 ms for User 308, bit-identical results).
+- For **Item-Based**, the neighbour pool is always the user's already-rated
+  movies, so it is resolved once per call. The remaining per-pair Pearson
+  (candidate movie × history movie) genuinely depends on both movies and is
+  therefore the residual cost; item-based is the slower of the two and scales
+  with profile size.
+
+## Genre handling
+
+`u.item` carries 19 pipe-separated attribute fields. Field 5 is the reserved
+"unknown" attribute, so the 18 genre flags are read from fields
+`6 ... 23` (`GENRE_FIELD_START = 6`, `GENRE_FIELD_END = 24`) against
+`MOVIELENS_GENRES` in canonical MovieLens order. Two movies in this dataset
+(`267` and `1373`) have all genre flags unset and are reported as such rather
+than being given a fabricated genre.
