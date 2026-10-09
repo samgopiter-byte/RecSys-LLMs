@@ -86,6 +86,43 @@ let N = data.N_BASKETS;
 let LAST_RESULT = null;
 
 /**
+ * How many rule rows the table shows while collapsed. Keeps the demo view
+ * compact while leaving every rule one click away.
+ *
+ * @type {number}
+ */
+const DEFAULT_VISIBLE_RULES = 10;
+
+/**
+ * Whether the Rules table is currently expanded to show every rule. Held across
+ * re-renders and re-sorts so the collapsed/expanded choice survives a change of
+ * ranking or thresholds.
+ *
+ * @type {boolean}
+ */
+let resultsExpanded = false;
+
+/**
+ * The rule currently open in the detail panel, identified by its stable key.
+ * Used to keep the selected table row highlighted across re-sorts and
+ * expand/collapse re-renders.
+ *
+ * @type {string|null}
+ */
+let selectedRuleKey = null;
+
+/**
+ * Stable identity for a rule. Item identities are joined so the same rule maps
+ * to the same key regardless of which ranking put it on screen.
+ *
+ * @param {{ antecedent: string[], consequent: string[] }} rule
+ * @returns {string}
+ */
+function ruleKey(rule) {
+  return `${JSON.stringify(rule.antecedent)}\u2192${JSON.stringify(rule.consequent)}`;
+}
+
+/**
  * @typedef {Object} Item
  * @property {string} stock       Stock code (the item identity).
  * @property {string} description Human-readable product description.
@@ -1268,14 +1305,24 @@ function renderResults(rules, index, container) {
 
   const n = (activeIndex && activeIndex.n) || N;
 
+  // Collapsed view shows a fixed number of rows; expanded shows them all. The
+  // incoming `rules` array is already in the selected ranking's order, so the
+  // collapsed slice is the top 10 of that ranking for the current run.
+  const total = rules.length;
+  const visibleCount = resultsExpanded
+    ? total
+    : Math.min(DEFAULT_VISIBLE_RULES, total);
+  const shown = rules.slice(0, visibleCount);
+
   // Each row is enriched on the way out: `enrichRule` fills in any missing count
   // or metric, then `enrichBusinessRule` attaches the commercial figures. Neither
   // call mutates the rule the miner produced.
-  const body = rules
+  const body = shown
     .map((rule, rowIndex) => {
       const business = enrichBusinessRule(enrichRule(rule, activeIndex), n);
+      const selected = selectedRuleKey !== null && selectedRuleKey === ruleKey(business);
       return `
-        <tr tabindex="0" data-rule-index="${rowIndex}">
+        <tr tabindex="0" data-rule-index="${rowIndex}"${selected ? ' class="selected" aria-current="true"' : ""}>
           <td>${escapeHtml(formatItemset(business.antecedent, activeIndex))}</td>
           <td>${escapeHtml(formatItemset(business.consequent, activeIndex))}</td>
           <td class="num">${formatCount(business.countA)}</td>
@@ -1285,14 +1332,28 @@ function renderResults(rules, index, container) {
           <td class="num">${formatRate(business.headroom)}</td>
           <td class="num">${formatRate(business.support)}</td>
           <td class="num">${formatMetric(business.lift)}</td>
+          <td class="inspect-cell"><button type="button" class="inspect" aria-label="Inspect this rule">Inspect</button></td>
         </tr>`;
     })
     .join("");
 
+  const canToggle = total > DEFAULT_VISIBLE_RULES;
+  const countText = resultsExpanded
+    ? `Showing all ${total} rule${total === 1 ? "" : "s"}.`
+    : `Showing ${visibleCount} of ${total} rule${total === 1 ? "" : "s"}.`;
+  const toggleLabel = resultsExpanded ? "Collapse rules" : "Expand rules";
+  const toggleButton = canToggle
+    ? `<button type="button" id="toggle-rules" class="secondary" aria-expanded="${resultsExpanded}">${toggleLabel}</button>`
+    : "";
+
   // The business columns make this table wide, so it scrolls horizontally rather
-  // than shrinking the type or dropping a column.
+  // than shrinking the type or dropping a column. The scroll bar sits directly
+  // beneath the table inside the same box.
   target.innerHTML = `
-    <p class="results-count">${rules.length} rule${rules.length === 1 ? "" : "s"}.</p>
+    <div class="results-toolbar">
+      <p class="results-count" id="results-count">${countText}</p>
+      ${toggleButton}
+    </div>
     <div class="scroll-x" tabindex="0" role="group" aria-label="Rules table, scroll horizontally">
       <table class="data-table rules-table">
         <thead>
@@ -1306,6 +1367,7 @@ function renderResults(rules, index, container) {
             <th scope="col">Headroom</th>
             <th scope="col">support</th>
             <th scope="col">lift</th>
+            <th scope="col">Inspect</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
@@ -1315,16 +1377,39 @@ function renderResults(rules, index, container) {
   target.querySelectorAll("tr[data-rule-index]").forEach((row) => {
     const activate = () => {
       const rule = rules[Number(row.dataset.ruleIndex)];
+      selectedRuleKey = ruleKey(rule);
+      target.querySelectorAll("tr[data-rule-index]").forEach((r) => {
+        const self = r === row;
+        r.classList.toggle("selected", self);
+        if (self) {
+          r.setAttribute("aria-current", "true");
+        } else {
+          r.removeAttribute("aria-current");
+        }
+      });
       renderRuleDetail(rule, activeIndex);
     };
     row.addEventListener("click", activate);
     row.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
+        // The Inspect button handles its own activation on keyboard; do not
+        // double-fire the row handler when it is the focused element.
+        if (event.target.closest && event.target.closest(".inspect")) {
+          return;
+        }
         event.preventDefault();
         activate();
       }
     });
   });
+
+  const toggle = target.querySelector("#toggle-rules");
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      resultsExpanded = !resultsExpanded;
+      renderResults(rules, activeIndex, container);
+    });
+  }
 }
 
 /**

@@ -69,9 +69,9 @@ code {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
   gap: 1.25rem;
-  max-width: 1200px;
+  max-width: 1500px;
   margin: 0 auto;
   padding: 1.25rem;
   align-items: start;
@@ -245,6 +245,35 @@ input[type="range"]:focus-visible {
   background: #eef4fa;
 }
 
+.rules-table tbody tr.selected,
+.rules-table tbody tr.selected:hover {
+  background: #d9e6f3;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.rules-table .inspect-cell {
+  width: 5.5rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.rules-table .inspect {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rules-table .inspect:hover {
+  background: #eef4fa;
+  border-color: var(--accent);
+}
+
 .results-count {
   color: var(--muted);
   font-size: 0.9rem;
@@ -311,8 +340,8 @@ input[type="range"]:focus-visible {
 
 .results-sort {
   margin-bottom: 0;
-  min-width: 15rem;
-  flex: 1 1 15rem;
+  min-width: 16rem;
+  flex: 1 1 22rem;
 }
 
 .results-sort label {
@@ -331,16 +360,71 @@ select {
   color: var(--text);
 }
 
+/* Count line + Expand/Collapse control, sitting between the heading and the
+   table so the visible-rule count is always legible. */
+.results-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.results-toolbar .results-count {
+  font-weight: 600;
+  color: var(--text);
+}
+
+#toggle-rules {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.9rem;
+}
+
 /* Tables wide enough to need it get their own horizontal scroll box, so a long
-   product description never widens the page itself. */
+   product description never widens the page itself. The bar is styled explicitly
+   because an overlay scrollbar all but disappears during a demo. */
 .scroll-x {
   overflow-x: auto;
   margin-top: 0.5rem;
-  padding-bottom: 0.25rem;
+  padding-bottom: 0.4rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) #eef1f4;
+}
+
+.scroll-x::-webkit-scrollbar {
+  height: 11px;
+}
+
+.scroll-x::-webkit-scrollbar-track {
+  background: #eef1f4;
+  border-radius: 6px;
+}
+
+.scroll-x::-webkit-scrollbar-thumb {
+  background: #b3bcc8;
+  border: 2px solid #eef1f4;
+  border-radius: 6px;
+}
+
+.scroll-x::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 
 .rules-table {
   min-width: 60rem;
+}
+
+/* The two item columns wrap long descriptions instead of stretching without
+   bound; the numeric columns stay as narrow as their own content. */
+.rules-table th:first-child,
+.rules-table td:first-child,
+.rules-table th:nth-child(2),
+.rules-table td:nth-child(2) {
+  min-width: 12rem;
+  max-width: 24rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .summary-metrics {
@@ -453,5 +537,16 @@ select {
 
   .sidebar {
     position: static;
+  }
+
+  .results-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .results-sort {
+    min-width: 0;
+    flex-basis: auto;
+    width: 100%;
   }
 }
