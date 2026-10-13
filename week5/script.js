@@ -122,9 +122,6 @@ let bestCheckpoint = null;
 /** Name of the TensorFlow.js backend selected by `initTf` (`"webgl"` / `"cpu"`). */
 let tfBackend = null;
 
-/** True while the browser training pipeline is running (prevents double runs). */
-let isTraining = false;
-
 // ---------------------------------------------------------------------------
 // TensorFlow.js bootstrap (provided)
 // ---------------------------------------------------------------------------
@@ -216,19 +213,6 @@ function movieTitle(id) {
   const numericId = Number(id);
   const movie = movies.find((m) => m.id === numericId);
   return movie ? movie.title : `Movie #${id}`;
-}
-
-/**
- * Look up a movie's genres by id, joined for display (reporting only).
- *
- * @param {number|string} id
- * @returns {string}
- */
-function movieGenres(id) {
-  const numericId = Number(id);
-  const movie = movies.find((m) => m.id === numericId);
-  if (!movie || !Array.isArray(movie.genres) || movie.genres.length === 0) return "\u2014";
-  return movie.genres.join(", ");
 }
 
 /**
@@ -513,7 +497,7 @@ function initializeFactors(train, numFactors = NUM_FACTORS) {
  * @param {TrainOptions} opts
  * @returns {HistoryRow[]}
  */
-function* trainMFIterator(train, val, opts) {
+function trainMF(train, val, opts) {
   trainingHistory = [];
   if (!model || !train || train.length === 0) return trainingHistory;
 
@@ -599,7 +583,6 @@ function* trainMFIterator(train, val, opts) {
         bestItemFactors = model.itemFactors.clone();
       }
 
-      yield row;
     }
   } finally {
     optimizer.dispose();
@@ -613,60 +596,6 @@ function* trainMFIterator(train, val, opts) {
   if (bestItemFactors) bestItemFactors.dispose();
 
   return trainingHistory;
-}
-
-/**
- * Synchronous training entry point (used by the self-checks and any non-DOM
- * caller). Drains `trainMFIterator` to completion, so the contract, math and
- * return value are unchanged; the browser uses `trainMFAsync` instead to yield
- * to the event loop between epochs.
- *
- * @param {Rating[]} train
- * @param {Rating[]} val
- * @param {TrainOptions} opts
- * @returns {HistoryRow[]}
- */
-function trainMF(train, val, opts) {
-  const iterator = trainMFIterator(train, val, opts);
-  let step = iterator.next();
-  while (!step.done) step = iterator.next();
-  return step.value;
-}
-
-/**
- * Yield control back to the browser so pending layout/paint work can run.
- *
- * @returns {Promise<void>}
- */
-function yieldToBrowser() {
-  if (typeof tf !== "undefined" && tf && typeof tf.nextFrame === "function") {
-    return tf.nextFrame();
-  }
-  return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
-    else setTimeout(resolve, 0);
-  });
-}
-
-/**
- * Browser-friendly training wrapper: identical math to `trainMF`, but it awaits
- * a browser yield after every epoch so the UI can repaint and report progress.
- *
- * @param {Rating[]} train
- * @param {Rating[]} val
- * @param {TrainOptions} opts
- * @param {(row: HistoryRow) => void} [onEpoch] called after each epoch completes
- * @returns {Promise<HistoryRow[]>}
- */
-async function trainMFAsync(train, val, opts, onEpoch) {
-  const iterator = trainMFIterator(train, val, opts);
-  let step = iterator.next();
-  while (!step.done) {
-    if (onEpoch) onEpoch(step.value);
-    await yieldToBrowser();
-    step = iterator.next();
-  }
-  return step.value;
 }
 
 /**
@@ -689,7 +618,13 @@ function selectBestCheckpoint(history) {
   let best = null;
   for (const row of history) {
     if (!row || !Number.isFinite(row.valRMSE)) continue;
-    if (best === null || row.valRMSE < best.valRMSE) best = row;
+    if (
+      best === null ||
+      row.valRMSE < best.valRMSE ||
+      (row.valRMSE === best.valRMSE && Number(row.epoch) < Number(best.epoch))
+    ) {
+      best = row;
+    }
   }
 
   return best;
@@ -956,52 +891,24 @@ function renderTopK(userId, container) {
     target.innerHTML = '<p class="empty-state">Train the model before requesting recommendations.</p>';
     return;
   }
-  const uid = Number(userId);
   try {
-    const recs = recommendTopK(uid, 10);
-    const pastHtml = renderPastRatings(uid);
+    const recs = recommendTopK(Number(userId), 10);
     if (!recs || recs.length === 0) {
-      target.innerHTML = pastHtml + '<p class="empty-state">No eligible recommendations for this user.</p>';
+      target.innerHTML = '<p class="empty-state">No eligible recommendations for this user.</p>';
       return;
     }
     target.innerHTML =
-      pastHtml +
       '<ol class="recommendation-list">' +
       recs
         .map(
           (r) =>
-            `<li><span class="rec-title">${escapeHtml(r.title)}</span> \u2014 <span class="rec-genres">${escapeHtml(movieGenres(r.movieId))}</span> \u2014 <span class="rec-score">score ${fmt(r.score, 2)}</span></li>`,
+            `<li><span class="rec-title">${escapeHtml(r.title)}</span> <span class="rec-score">${fmt(r.score)}</span></li>`,
         )
         .join("") +
       "</ol>";
   } catch (error) {
     target.innerHTML = `<p class="empty-state">Recommendations unavailable — implement the <code>TODO(hw5)</code> functions. <code>${escapeHtml(error.message)}</code></p>`;
   }
-}
-
-/**
- * Render a user's highest-rated past movies from the TRAIN + VALIDATION splits
- * (never test) as a small context block for the final analysis.
- *
- * Sorted by rating descending, then timestamp descending; up to 10 movies.
- *
- * @param {number} userId
- * @returns {string} HTML for the past-ratings block.
- */
-function renderPastRatings(userId) {
-  const history = [...trainSet, ...valSet].filter((r) => r.userId === userId);
-  if (history.length === 0) {
-    return '<div class="past-ratings"><h4>Past ratings</h4><p class="empty-state">No train/validation ratings for this user.</p></div>';
-  }
-  history.sort((a, b) => b.rating - a.rating || b.timestamp - a.timestamp);
-  const rows = history
-    .slice(0, 10)
-    .map(
-      (r) =>
-        `<li><span class="past-title">${escapeHtml(movieTitle(r.movieId))}</span> \u2014 <span class="past-rating">${fmt(r.rating, 1)} \u2605</span> \u2014 <span class="past-genres">${escapeHtml(movieGenres(r.movieId))}</span></li>`,
-    )
-    .join("");
-  return `<div class="past-ratings"><h4>Past ratings (train + validation)</h4><ol class="past-list">${rows}</ol></div>`;
 }
 
 /**
@@ -1037,57 +944,6 @@ function renderRecall(K = 10, container) {
   } catch (error) {
     target.innerHTML = `<p class="empty-state">Recall unavailable — implement the <code>TODO(hw5)</code> functions. <code>${escapeHtml(error.message)}</code></p>`;
   }
-}
-
-/**
- * Ensure the test-metrics container exists. It is created lazily in the
- * Training section, right after the training curve, so `index.html` stays put.
- *
- * @returns {HTMLElement|null}
- */
-function ensureTestMetricsElement() {
-  let element = document.getElementById("test-metrics");
-  if (element) return element;
-  const anchor = document.getElementById("training-curve");
-  if (!anchor || !anchor.parentNode) return null;
-  element = document.createElement("div");
-  element.id = "test-metrics";
-  element.className = "test-metrics";
-  anchor.parentNode.insertBefore(element, anchor.nextSibling);
-  return element;
-}
-
-/**
- * Render the held-out TEST metrics of the restored best checkpoint: the
- * training-mean baseline, the factorization's test RMSE, and the improvement.
- * The test split is used for reporting only — never for training or
- * checkpoint selection.
- *
- * @param {HTMLElement|null} [container]
- * @returns {void}
- */
-function renderTestMetrics(container) {
-  const target = container || ensureTestMetricsElement();
-  if (!target) return;
-  if (!model) {
-    target.innerHTML = "";
-    return;
-  }
-  const baseline = computeBaselineRMSE(testSet);
-  const mf = computeRMSEFor(testSet);
-  const improvement = baseline - mf;
-  const pct = baseline > 0 ? (improvement / baseline) * 100 : 0;
-  const sign = improvement >= 0 ? "+" : "";
-  target.innerHTML = `
-    <table class="data-table">
-      <thead><tr><th scope="col">Test metric</th><th scope="col">RMSE</th></tr></thead>
-      <tbody>
-        <tr><td>Baseline test RMSE (train mean)</td><td class="num">${fmt(baseline)}</td></tr>
-        <tr class="best-epoch"><td>MF test RMSE (best checkpoint)</td><td class="num">${fmt(mf)}</td></tr>
-        <tr><td>Improvement (baseline &minus; MF)</td><td class="num">${sign}${fmt(improvement)} (${sign}${fmt(pct, 2)}%)</td></tr>
-      </tbody>
-    </table>
-    <p class="hint">Test RMSE computed after restoring the best validation checkpoint; the test split is used for reporting only.</p>`;
 }
 
 /**
@@ -1129,11 +985,7 @@ function populateUserSelect() {
  * Run the full training pipeline: initialize, train, select the best checkpoint,
  * and refresh the training curve.
  *
- * The heavy loop runs through `trainMFAsync`, which yields to the browser between
- * epochs so the status text and training curve update and the page never freezes.
- * The Train button is disabled while running to prevent concurrent runs.
- *
- * @returns {Promise<void>|void}
+ * @returns {void}
  */
 function runPipeline() {
   const status = document.getElementById("status");
@@ -1141,49 +993,26 @@ function runPipeline() {
     if (status) status.textContent = "Data not loaded yet — reload the page.";
     return;
   }
-  if (isTraining) return;
-
-  const trainButton = document.getElementById("train");
-  const originalLabel = trainButton ? trainButton.textContent : null;
-  isTraining = true;
-  if (trainButton) {
-    trainButton.disabled = true;
-    trainButton.textContent = "Training\u2026";
-  }
-
   const opts = readHyperparameters();
-  return (async () => {
-    try {
-      if (status) status.textContent = "Training\u2026";
-      await yieldToBrowser();
-      initializeFactors(trainSet, NUM_FACTORS);
-      trainingHistory = await trainMFAsync(trainSet, valSet, opts, (row) => {
-        if (status) status.textContent = `Training epoch ${row.epoch} / ${opts.epochs}\u2026`;
-        renderTrainingCurve();
-      });
-      bestCheckpoint = selectBestCheckpoint(trainingHistory);
-      renderTrainingCurve();
-      renderTestMetrics();
-      if (status) {
-        status.textContent = bestCheckpoint
-          ? `Trained ${opts.epochs} epoch(s) on ${tfBackend || "tf"} — best val RMSE ${fmt(bestCheckpoint.valRMSE)} at epoch ${bestCheckpoint.epoch}.`
-          : `Trained ${opts.epochs} epoch(s) — no history recorded.`;
-      }
-    } catch (error) {
-      const message = String(error && error.message ? error.message : error);
-      if (status) status.textContent = message;
-      const target = document.getElementById("training-curve");
-      if (target) {
-        target.innerHTML = `<p class="empty-state">Training failed — implement the <code>TODO(hw5)</code> functions, then press &ldquo;Train&rdquo;. <code>${escapeHtml(message)}</code></p>`;
-      }
-    } finally {
-      isTraining = false;
-      if (trainButton) {
-        trainButton.disabled = false;
-        trainButton.textContent = originalLabel != null ? originalLabel : "Train";
-      }
+  try {
+    if (status) status.textContent = "Training\u2026";
+    initializeFactors(trainSet, NUM_FACTORS);
+    trainingHistory = trainMF(trainSet, valSet, opts);
+    bestCheckpoint = selectBestCheckpoint(trainingHistory);
+    renderTrainingCurve();
+    if (status) {
+      status.textContent = bestCheckpoint
+        ? `Trained ${opts.epochs} epoch(s) on ${tfBackend || "tf"} — best val RMSE ${fmt(bestCheckpoint.valRMSE)} at epoch ${bestCheckpoint.epoch}.`
+        : `Trained ${opts.epochs} epoch(s) — no history recorded.`;
     }
-  })();
+  } catch (error) {
+    const message = String(error && error.message ? error.message : error);
+    if (status) status.textContent = message;
+    const target = document.getElementById("training-curve");
+    if (target) {
+      target.innerHTML = `<p class="empty-state">Training failed — implement the <code>TODO(hw5)</code> functions, then press &ldquo;Train&rdquo;. <code>${escapeHtml(message)}</code></p>`;
+    }
+  }
 }
 
 /**
