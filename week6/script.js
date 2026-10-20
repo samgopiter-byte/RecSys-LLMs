@@ -3342,7 +3342,8 @@ function hw6CurrentRecommendations() {
  *
  * Reports users, movies, ratings, sparsity, positive training interactions,
  * zero-degree users and movies, and the split record counts. Missing ratings are
- * unobserved, never zeros.
+ * unobserved, never zeros. Sparsity is measured over distinct users and distinct
+ * catalogue movies (padding cells excluded).
  *
  * @returns {void}
  */
@@ -3360,7 +3361,17 @@ function hw6RenderDatasetSummary() {
   const total = train.length + val.length + test.length;
   const users = HW6_STATE.trainUserIds.length;
   const movieCount = HW6_STATE.candidateIds.length;
-  const cells = (numUsers + 1) * (HW6_MAX_MOVIE_ID + 1);
+  // Sparsity denominator = real entities only: distinct users observed in
+  // `ratings` and distinct movie ids in the loaded `movies` catalogue. The
+  // `(numUsers + 1) x (HW6_MAX_MOVIE_ID + 1)` matrix shape includes a padding
+  // row for index 0 and a padding column for the id-0 slot, so counting those
+  // would dilute the ratio with cells that cannot hold a rating. `numUsers`
+  // itself is unchanged: MF indexing keeps the padded shape.
+  const distinctUsers = new Set();
+  for (let i = 0; i < ratings.length; i++) distinctUsers.add(ratings[i].userId);
+  const distinctMovies = new Set();
+  for (let i = 0; i < movies.length; i++) distinctMovies.add(movies[i].id);
+  const cells = distinctUsers.size * distinctMovies.size;
   const sparsity = cells > 0 ? 1 - total / cells : 0;
   const exclusions = typeof SPLIT_EXCLUSIONS === "undefined" ? [] : SPLIT_EXCLUSIONS;
 
