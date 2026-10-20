@@ -179,13 +179,18 @@ Dataset provenance: MovieLens 100K, GroupLens, University of Minnesota. The prev
 
 ---
 
-## Local run instructions (added for this starter)
+## Local run and dependency details
 
-TensorFlow.js is loaded from the CDN in `index.html`; d3 is vendored locally.
-
-Serve the folder over HTTP (the data layer uses `fetch`, so `file://` will not work):
-
-    cd week6
-    python3 -m http.server 8000
-
-Then open `http://localhost:8000/index.html`.
+- **TensorFlow.js**: `week6/index.html` loads **tfjs@4.22.0** via the official CDN (`https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js`). Node-side runner scripts in the temp folder may use a local `tf.min.js`, but the in-browser submission view uses the CDN build. No bundler or backend package is required; the code falls back to `webgl` then `cpu` via `tf.setBackend`/`tf.ready`.
+- **D3**: `week6/index.html` references **d3@7.9.0** via the relative path `vendor/d3.min.js`, which resolves to the copy that already exists at `week6/vendor/d3.min.js` (header shows `7.9.0`). Keep the asset layout as-is; there is no `../vendor` load in the page.
+- **Serving**: use any static HTTP server from `C:\Users\pc01\Documents\RecSys-LLMs` (e.g. `python -m http.server 8000`) and browse to `http://localhost:8000/week6/`. The dataset is loaded with `fetch`, so opening the page as a `file://` URL will not work; an HTTP server is required. CDN resources additionally expect a network connection.
+- **Complete run/export steps**:
+  1. Serve repo root on `localhost:8000`, open `/week6/`.
+  2. Load data (auto-bootstraps), verify tfjs backend in the status line.
+  3. Click **Build graph**; confirm graph summary updates.
+  4. Click **Evaluate** to run the full pipeline (validation sweep → primary comparison at selected alpha). The progress panel updates with stage/iteration/elapsed/backend. **Cancel** stops at the next yield point (no final result cached).
+  5. After completion, export **results.csv**, **recommendations.csv**, and **verification.json**. The exports reflect the last completed run (`run_id`, `run_status`, `generated_at`, and for recommendations `list_mean_popularity`).
+  6. Use **Two-user demo** to inspect the three controlled PPR settings (user A @ 0.85 reference, user B @ 0.85 seed-only change, user A @ 0.50 alpha-only change) and their overlap counts; it records these PPR lists into the same recommendations set (deduped). The four-method Top-10 lists for both cohort users are recorded by **Evaluate**, not by the demo.
+- **Cohorts note**: `val` has **846** users and `test` has **861** users. These are **cohort sizes (number of users)**, not the number of CSV rows. A Top-10 per user produces 10 rows per (user,method,alpha) list.
+- **Reproducibility**: MF uses `MF_SEED=20261013`, factors 16, fixed grid `[0.50,0.70,0.85,0.95]`, `tol=1e-6`, `maxIter=500`. Cache keys include `graphEpoch` and alpha to four decimals; identical runs reuse caches. Evaluation never uses test to tune/choose a checkpoint.
+- **Verification**: Node CPU self-checks pass the official harness (12/0/0); synthetic fixtures verify batch equality and the repaired leak. Browser/WebGL timings are **NOT VERIFIED** in this environment (no browser automation). Any performance claims beyond this note are outside the scope of this agent run.

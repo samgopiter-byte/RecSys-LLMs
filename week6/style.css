@@ -456,6 +456,53 @@ output {
   margin: 0;
 }
 
+/* --- evaluation progress ------------------------------------------------ */
+
+.hidden {
+  display: none;
+}
+
+.progress {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--inset);
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.progress-track {
+  margin: 0.4rem 0;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent, #3b82f6);
+  transition: width 0.15s linear;
+}
+
+.progress-bar--indeterminate {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--accent, #3b82f6) 0,
+    var(--accent, #3b82f6) 8px,
+    transparent 8px,
+    transparent 16px
+  );
+}
+
 /* --- responsive --------------------------------------------------------- */
 
 @media (max-width: 760px) {

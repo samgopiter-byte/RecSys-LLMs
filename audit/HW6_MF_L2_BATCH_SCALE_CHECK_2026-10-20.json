@@ -1,0 +1,89 @@
+{
+  "generated_at": "2026-10-20T10:06:42.351Z",
+  "scope": "controlled code check of the shipped L2 scale, not final HW6 metrics",
+  "trainLength": 79619,
+  "reg": 0.05,
+  "coefficient_recovered": "c = (cost - mse) / rawL2sum from the real shipped loss",
+  "partial_last_batch": {
+    "label": "partial_last_batch",
+    "sliceLen": 1300,
+    "batchSize": 512,
+    "batchCount": 3,
+    "rows": [
+      {
+        "batch": 0,
+        "expectedSize": 512,
+        "impliedL2Coefficient": 0.00009765664775868366,
+        "expectedCoefficient": 0.00009765625,
+        "ratio": 1.0000040730489206,
+        "absError": 3.977586836561176e-10
+      },
+      {
+        "batch": 1,
+        "expectedSize": 512,
+        "impliedL2Coefficient": 0.00009765664775868366,
+        "expectedCoefficient": 0.00009765625,
+        "ratio": 1.0000040730489206,
+        "absError": 3.977586836561176e-10
+      },
+      {
+        "batch": 2,
+        "expectedSize": 276,
+        "impliedL2Coefficient": 0.00018115933434628917,
+        "expectedCoefficient": 0.00018115942028985507,
+        "ratio": 0.9999995255915162,
+        "absError": 8.594356590329102e-11
+      }
+    ],
+    "lastBatchSize": 276,
+    "maxAbsError": 3.977586836561176e-10,
+    "pass": true
+  },
+  "exact_multiple": {
+    "label": "exact_multiple",
+    "sliceLen": 1024,
+    "batchSize": 512,
+    "batchCount": 2,
+    "rows": [
+      {
+        "batch": 0,
+        "expectedSize": 512,
+        "impliedL2Coefficient": 0.00009765664775868366,
+        "expectedCoefficient": 0.00009765625,
+        "ratio": 1.0000040730489206,
+        "absError": 3.977586836561176e-10
+      },
+      {
+        "batch": 1,
+        "expectedSize": 512,
+        "impliedL2Coefficient": 0.00009765664775868366,
+        "expectedCoefficient": 0.00009765625,
+        "ratio": 1.0000040730489206,
+        "absError": 3.977586836561176e-10
+      }
+    ],
+    "lastBatchSize": 512,
+    "maxAbsError": 3.977586836561176e-10,
+    "pass": true
+  },
+  "single_small_batch": {
+    "label": "single_small_batch",
+    "sliceLen": 100,
+    "batchSize": 512,
+    "batchCount": 1,
+    "rows": [
+      {
+        "batch": 0,
+        "expectedSize": 100,
+        "impliedL2Coefficient": 0.0004999997627957582,
+        "expectedCoefficient": 0.0005,
+        "ratio": 0.9999995255915164,
+        "absError": 2.372042418171891e-10
+      }
+    ],
+    "lastBatchSize": 100,
+    "maxAbsError": 2.372042418171891e-10,
+    "pass": true
+  },
+  "overall": true
+}

@@ -1,0 +1,101 @@
+user_id,method,alpha,rank,movie_id,title,genres,score,training_popularity,list_mean_popularity,run_id,run_status
+1,popularity,,1,100,Fargo (1996),Crime;Drama;Thriller,377,377,246.8000,run-1-1,completed
+1,popularity,,2,258,Contact (1997),Drama;Sci-Fi,307,307,246.8000,run-1-1,completed
+1,popularity,,3,286,"English Patient, The (1996)",Drama;Romance;War,279,279,246.8000,run-1-1,completed
+1,popularity,,4,300,Air Force One (1997),Action;Thriller,235,235,246.8000,run-1-1,completed
+1,popularity,,5,288,Scream (1996),Horror;Thriller,226,226,246.8000,run-1-1,completed
+1,popularity,,6,318,Schindler's List (1993),Drama;War,224,224,246.8000,run-1-1,completed
+1,popularity,,7,313,Titanic (1997),Action;Drama;Romance,219,219,246.8000,run-1-1,completed
+1,popularity,,8,302,L.A. Confidential (1997),Crime;Film-Noir;Mystery;Thriller,202,202,246.8000,run-1-1,completed
+1,popularity,,9,357,One Flew Over the Cuckoo's Nest (1975),Drama,202,202,246.8000,run-1-1,completed
+1,popularity,,10,483,Casablanca (1942),Drama;Romance;War,197,197,246.8000,run-1-1,completed
+2,popularity,,1,181,Return of the Jedi (1983),Action;Adventure;Romance;Sci-Fi;War,339,339,262.1000,run-1-1,completed
+2,popularity,,2,174,Raiders of the Lost Ark (1981),Action;Adventure,312,312,262.1000,run-1-1,completed
+2,popularity,,3,98,"Silence of the Lambs, The (1991)",Drama;Thriller,308,308,262.1000,run-1-1,completed
+2,popularity,,4,56,Pulp Fiction (1994),Crime;Drama,263,263,262.1000,run-1-1,completed
+2,popularity,,5,172,"Empire Strikes Back, The (1980)",Action;Adventure;Drama;Romance;Sci-Fi;War,261,261,262.1000,run-1-1,completed
+2,popularity,,6,7,Twelve Monkeys (1995),Drama;Sci-Fi,234,234,262.1000,run-1-1,completed
+2,popularity,,7,79,"Fugitive, The (1993)",Action;Thriller,230,230,262.1000,run-1-1,completed
+2,popularity,,8,64,"Shawshank Redemption, The (1994)",Drama,228,228,262.1000,run-1-1,completed
+2,popularity,,9,318,Schindler's List (1993),Drama;War,224,224,262.1000,run-1-1,completed
+2,popularity,,10,173,"Princess Bride, The (1987)",Action;Adventure;Comedy;Romance,222,222,262.1000,run-1-1,completed
+1,pagerank,0.50,1,258,Contact (1997),Drama;Sci-Fi,0.0023751864209771156,307,239.4000,run-1-1,completed
+1,pagerank,0.50,2,286,"English Patient, The (1996)",Drama;Romance;War,0.002291253302246332,279,239.4000,run-1-1,completed
+1,pagerank,0.50,3,100,Fargo (1996),Crime;Drama;Thriller,0.002271695528179407,377,239.4000,run-1-1,completed
+1,pagerank,0.50,4,313,Titanic (1997),Action;Drama;Romance,0.0020634259562939405,219,239.4000,run-1-1,completed
+1,pagerank,0.50,5,300,Air Force One (1997),Action;Thriller,0.0020034192129969597,235,239.4000,run-1-1,completed
+1,pagerank,0.50,6,288,Scream (1996),Horror;Thriller,0.0018683733651414514,226,239.4000,run-1-1,completed
+1,pagerank,0.50,7,302,L.A. Confidential (1997),Crime;Film-Noir;Mystery;Thriller,0.001798133598640561,202,239.4000,run-1-1,completed
+1,pagerank,0.50,8,294,Liar Liar (1997),Comedy,0.0014883464900776744,182,239.4000,run-1-1,completed
+1,pagerank,0.50,9,275,Sense and Sensibility (1995),Drama;Romance,0.0012158651370555162,178,239.4000,run-1-1,completed
+1,pagerank,0.50,10,222,Star Trek: First Contact (1996),Action;Adventure;Sci-Fi,0.0011928167659789324,189,239.4000,run-1-1,completed
+2,pagerank,0.50,1,181,Return of the Jedi (1983),Action;Adventure;Romance;Sci-Fi;War,0.0019889404065907,339,247.4000,run-1-1,completed
+2,pagerank,0.50,2,174,Raiders of the Lost Ark (1981),Action;Adventure,0.0015527261421084404,312,247.4000,run-1-1,completed
+2,pagerank,0.50,3,98,"Silence of the Lambs, The (1991)",Drama;Thriller,0.0015255436301231384,308,247.4000,run-1-1,completed
+2,pagerank,0.50,4,7,Twelve Monkeys (1995),Drama;Sci-Fi,0.001373774721287191,234,247.4000,run-1-1,completed
+2,pagerank,0.50,5,56,Pulp Fiction (1994),Crime;Drama,0.0013726184843108058,263,247.4000,run-1-1,completed
+2,pagerank,0.50,6,172,"Empire Strikes Back, The (1980)",Action;Adventure;Drama;Romance;Sci-Fi;War,0.0013182985130697489,261,247.4000,run-1-1,completed
+2,pagerank,0.50,7,117,"Rock, The (1996)",Action;Adventure;Thriller,0.0013080037897452712,215,247.4000,run-1-1,completed
+2,pagerank,0.50,8,121,Independence Day (ID4) (1996),Action;Sci-Fi;War,0.0012972892727702856,207,247.4000,run-1-1,completed
+2,pagerank,0.50,9,268,Chasing Amy (1997),Drama;Romance,0.0012656085891649127,146,247.4000,run-1-1,completed
+2,pagerank,0.50,10,222,Star Trek: First Contact (1996),Action;Adventure;Sci-Fi,0.0011928167659789324,189,247.4000,run-1-1,completed
+1,ppr,0.50,1,100,Fargo (1996),Crime;Drama;Thriller,0.0006855191895738244,377,228.4000,run-1-1,completed
+1,ppr,0.50,2,258,Contact (1997),Drama;Sci-Fi,0.0004398658056743443,307,228.4000,run-1-1,completed
+1,ppr,0.50,3,286,"English Patient, The (1996)",Drama;Romance;War,0.00043101841583848,279,228.4000,run-1-1,completed
+1,ppr,0.50,4,318,Schindler's List (1993),Drama;War,0.0004038166953250766,224,228.4000,run-1-1,completed
+1,ppr,0.50,5,357,One Flew Over the Cuckoo's Nest (1975),Drama,0.00037716623046435416,202,228.4000,run-1-1,completed
+1,ppr,0.50,6,483,Casablanca (1942),Drama;Romance;War,0.00035968932206742465,197,228.4000,run-1-1,completed
+1,ppr,0.50,7,222,Star Trek: First Contact (1996),Action;Adventure;Sci-Fi,0.00033278539194725454,189,228.4000,run-1-1,completed
+1,ppr,0.50,8,475,Trainspotting (1996),Drama,0.00032809015829116106,164,228.4000,run-1-1,completed
+1,ppr,0.50,9,275,Sense and Sensibility (1995),Drama;Romance,0.00032018491765484214,178,228.4000,run-1-1,completed
+1,ppr,0.50,10,423,E.T. the Extra-Terrestrial (1982),Children's;Drama;Fantasy;Sci-Fi,0.00030566827626898885,167,228.4000,run-1-1,completed
+2,ppr,0.50,1,181,Return of the Jedi (1983),Action;Adventure;Romance;Sci-Fi;War,0.0006973391282372177,339,226.7000,run-1-1,completed
+2,ppr,0.50,2,9,Dead Man Walking (1995),Drama,0.0004976635682396591,182,226.7000,run-1-1,completed
+2,ppr,0.50,3,7,Twelve Monkeys (1995),Drama;Sci-Fi,0.00047437407192774117,234,226.7000,run-1-1,completed
+2,ppr,0.50,4,117,"Rock, The (1996)",Action;Adventure;Thriller,0.0004563616821542382,215,226.7000,run-1-1,completed
+2,ppr,0.50,5,98,"Silence of the Lambs, The (1991)",Drama;Thriller,0.00044651018106378615,308,226.7000,run-1-1,completed
+2,ppr,0.50,6,121,Independence Day (ID4) (1996),Action;Sci-Fi;War,0.00043071250547654927,207,226.7000,run-1-1,completed
+2,ppr,0.50,7,174,Raiders of the Lost Ark (1981),Action;Adventure,0.00040285097202286124,312,226.7000,run-1-1,completed
+2,ppr,0.50,8,268,Chasing Amy (1997),Drama;Romance,0.00040181103395298123,146,226.7000,run-1-1,completed
+2,ppr,0.50,9,475,Trainspotting (1996),Drama,0.00040160532807931304,164,226.7000,run-1-1,completed
+2,ppr,0.50,10,15,Mr. Holland's Opus (1995),Drama,0.0004009184194728732,160,226.7000,run-1-1,completed
+1,mf,,1,408,"Close Shave, A (1995)",Animation;Comedy;Thriller,5.216143608093262,85,138.5000,run-1-1,completed
+1,mf,,2,100,Fargo (1996),Crime;Drama;Thriller,5.215612888336182,377,138.5000,run-1-1,completed
+1,mf,,3,169,"Wrong Trousers, The (1993)",Animation;Comedy,5.208174228668213,90,138.5000,run-1-1,completed
+1,mf,,4,483,Casablanca (1942),Drama;Romance;War,5.204159736633301,197,138.5000,run-1-1,completed
+1,mf,,5,511,Lawrence of Arabia (1962),Adventure;War,5.051167011260986,134,138.5000,run-1-1,completed
+1,mf,,6,603,Rear Window (1954),Mystery;Thriller,4.895515441894531,152,138.5000,run-1-1,completed
+1,mf,,7,474,Dr. Strangelove or: How I Learned to Stop Worrying and Love the Bomb (1963),Sci-Fi;War,4.884840965270996,133,138.5000,run-1-1,completed
+1,mf,,8,654,Chinatown (1974),Film-Noir;Mystery;Thriller,4.874353408813477,97,138.5000,run-1-1,completed
+1,mf,,9,1142,When We Were Kings (1996),Documentary,4.819425582885742,29,138.5000,run-1-1,completed
+1,mf,,10,484,"Maltese Falcon, The (1941)",Film-Noir;Mystery,4.797304630279541,91,138.5000,run-1-1,completed
+2,mf,,1,483,Casablanca (1942),Drama;Romance;War,4.328004837036133,197,140.9000,run-1-1,completed
+2,mf,,2,135,2001: A Space Odyssey (1968),Drama;Mystery;Sci-Fi;Thriller,4.327209949493408,163,140.9000,run-1-1,completed
+2,mf,,3,197,"Graduate, The (1967)",Drama;Romance,4.323766708374023,160,140.9000,run-1-1,completed
+2,mf,,4,185,Psycho (1960),Horror;Romance;Thriller,4.311724662780762,159,140.9000,run-1-1,completed
+2,mf,,5,654,Chinatown (1974),Film-Noir;Mystery;Thriller,4.307428359985352,97,140.9000,run-1-1,completed
+2,mf,,6,603,Rear Window (1954),Mystery;Thriller,4.300529956817627,152,140.9000,run-1-1,completed
+2,mf,,7,511,Lawrence of Arabia (1962),Adventure;War,4.280074119567871,134,140.9000,run-1-1,completed
+2,mf,,8,474,Dr. Strangelove or: How I Learned to Stop Worrying and Love the Bomb (1963),Sci-Fi;War,4.271368980407715,133,140.9000,run-1-1,completed
+2,mf,,9,180,Apocalypse Now (1979),Drama;War,4.2552876472473145,151,140.9000,run-1-1,completed
+2,mf,,10,513,"Third Man, The (1949)",Mystery;Thriller,4.215903282165527,63,140.9000,run-1-1,completed
+1,ppr,0.85,1,100,Fargo (1996),Crime;Drama;Thriller,0.0027416825760155916,377,245.5000,run-1-1,completed
+1,ppr,0.85,2,258,Contact (1997),Drama;Sci-Fi,0.00200196192599833,307,245.5000,run-1-1,completed
+1,ppr,0.85,3,286,"English Patient, The (1996)",Drama;Romance;War,0.0018735377816483378,279,245.5000,run-1-1,completed
+1,ppr,0.85,4,318,Schindler's List (1993),Drama;War,0.0016319361748173833,224,245.5000,run-1-1,completed
+1,ppr,0.85,5,357,One Flew Over the Cuckoo's Nest (1975),Drama,0.0014931062469258904,202,245.5000,run-1-1,completed
+1,ppr,0.85,6,483,Casablanca (1942),Drama;Romance;War,0.001444636844098568,197,245.5000,run-1-1,completed
+1,ppr,0.85,7,288,Scream (1996),Horror;Thriller,0.0014287265948951244,226,245.5000,run-1-1,completed
+1,ppr,0.85,8,300,Air Force One (1997),Action;Thriller,0.0014131061034277081,235,245.5000,run-1-1,completed
+1,ppr,0.85,9,222,Star Trek: First Contact (1996),Action;Adventure;Sci-Fi,0.001352948136627674,189,245.5000,run-1-1,completed
+1,ppr,0.85,10,313,Titanic (1997),Action;Drama;Romance,0.001318333437666297,219,245.5000,run-1-1,completed
+2,ppr,0.85,1,181,Return of the Jedi (1983),Action;Adventure;Romance;Sci-Fi;War,0.0026007494889199734,339,254.9000,run-1-1,completed
+2,ppr,0.85,2,98,"Silence of the Lambs, The (1991)",Drama;Thriller,0.0020272971596568823,308,254.9000,run-1-1,completed
+2,ppr,0.85,3,174,Raiders of the Lost Ark (1981),Action;Adventure,0.0019665772560983896,312,254.9000,run-1-1,completed
+2,ppr,0.85,4,7,Twelve Monkeys (1995),Drama;Sci-Fi,0.0017902936087921262,234,254.9000,run-1-1,completed
+2,ppr,0.85,5,56,Pulp Fiction (1994),Crime;Drama,0.0017448199214413762,263,254.9000,run-1-1,completed
+2,ppr,0.85,6,117,"Rock, The (1996)",Action;Adventure;Thriller,0.0016845931531861424,215,254.9000,run-1-1,completed
+2,ppr,0.85,7,172,"Empire Strikes Back, The (1980)",Action;Adventure;Drama;Romance;Sci-Fi;War,0.001660627662204206,261,254.9000,run-1-1,completed
+2,ppr,0.85,8,9,Dead Man Walking (1995),Drama,0.0016079515917226672,182,254.9000,run-1-1,completed
+2,ppr,0.85,9,121,Independence Day (ID4) (1996),Action;Sci-Fi;War,0.0016027564415708184,207,254.9000,run-1-1,completed
+2,ppr,0.85,10,64,"Shawshank Redemption, The (1994)",Drama,0.0015171803534030914,228,254.9000,run-1-1,completed

@@ -1,0 +1,7 @@
+
+# Preserve exact HW6 submission/evidence bytes.
+*.pdf binary
+golankov_alexander_a06_session.json -text
+week6/submission/*.json -text
+week6/submission/*.csv -text
+audit/HW6_STUDENT_MF_FIXED_WEBGL_2026-10-20.txt -text -diff

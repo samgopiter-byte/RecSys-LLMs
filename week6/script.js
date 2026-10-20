@@ -124,13 +124,62 @@ const HW6_INTERFACE_MARK = "HW6_INTERFACE";
 const HW6_MAX_ITERATIONS = 500;
 const HW6_TOLERANCE = 1e-6;
 
+/**
+ * Cache bounds. PPR holds one node-probability vector per (user, alpha), so the
+ * limit bounds memory during an interactive session; PageRank holds one vector
+ * per alpha; recommendation lists are small arrays but numerous.
+ */
+const HW6_CACHE_LIMIT = { pageRank: 64, ppr: 2048, rec: 20000 };
+
+/**
+ * Users propagated per batched `tf.matMul` call. Bounds the working set of the
+ * async engine (memory and the latency of one batch) without changing results,
+ * which are computed per column.
+ */
+const HW6_BATCH_SIZE = 64;
+
+/**
+ * Wall-time budget (ms) between browser yields inside the batched kernel. Small
+ * enough that the page paints and Cancel stays responsive, large enough that
+ * yielding does not dominate the run.
+ */
+const HW6_YIELD_GAP_MS = 30;
+
+/**
+ * Minimum wall time (ms) between intra-chunk progress repaints. The batched
+ * kernel calls `onIteration` every iteration; this throttle keeps a fast
+ * convergence from churning the DOM while still letting the panel move during a
+ * slow chunk.
+ */
+const HW6_PROGRESS_MIN_REPAINT_MS = 80;
+
+/**
+ * Controls that must not be used while an evaluation is in flight. Run
+ * self-checks (`run-tests`) are included because they temporarily replace the
+ * active graph, which disposes tensors the live async kernel still holds.
+ * Exports are included because they would capture a partial run.
+ */
+const HW6_RUN_GUARD_IDS = [
+  "recall-btn", "alpha-sweep-btn", "two-user-demo-btn", "recommend-btn",
+  "run-pagerank", "run-ppr", "build-graph", "run-tests", "step-btn",
+  "reset-steps", "export-verification", "export-results",
+  "export-recommendations",
+];
+
+/** Select/range inputs disabled while an evaluation is in flight. */
+const HW6_RUN_GUARD_INPUTS = ["method", "alpha", "user-select", "seed-user-select"];
+
 /** Dimensionality of the provided MF reference model. */
 const MF_FACTORS = 16;
 
 /** Fixed seed for the deterministic MF reference (reproducible initialisation). */
 const MF_SEED = 20261013;
 
-/** Training settings, keeping the previous assignment's convention. */
+/**
+ * Training settings, keeping the previous assignment's convention. `reg` is the
+ * L2 coefficient applied as `sum(factors^2) * reg / actualBatchSize` (the same
+ * per-batch normalisation as the submitted HW5 implementation).
+ */
 const MF_CONFIG = { epochs: 30, lr: 0.01, reg: 0.05, batchSize: 512 };
 
 /**
@@ -141,11 +190,12 @@ const MF_CONFIG = { epochs: 30, lr: 0.01, reg: 0.05, batchSize: 512 };
  * `trainedAt` is the lazy-training marker: it stays `null` until the reference
  * has actually been trained, so "not trained yet" is a truthful, checkable flag
  * rather than an inference from a zero score. `checkpoint` stays `null` while
- * untrained.
+ * untrained. `l2Scaling` records the per-batch L2 normalisation actually used
+ * (`reg / actualBatchSize`, matching the HW5 convention).
  *
  * @type {{factors:number, epochs:number, learningRate:number,
  *         regularization:number, batchSize:number, seed:number,
- *         backend:(string|null), checkpoint:(number|null),
+ *         l2Scaling:string, backend:(string|null), checkpoint:(number|null),
  *         validationRMSE:(number|null), trainedAt:(string|null),
  *         history:Array<Object>}}
  */
@@ -156,6 +206,7 @@ const MF_INFO = {
   regularization: MF_CONFIG.reg,
   batchSize: MF_CONFIG.batchSize,
   seed: MF_SEED,
+  l2Scaling: "reg / actualBatchSize",
   backend: null,
   checkpoint: null,
   validationRMSE: null,
@@ -215,9 +266,30 @@ const HW6_STATE = {
   /** Count of distinct positive training (user, movie) pairs. */
   positivePairs: 0,
 
-  /** Cached propagation results, keyed by alpha / seed. */
-  pageRank: null,
-  ppr: null,
+  /**
+   * Multi-entry propagation caches, keyed by graph epoch + alpha (+ seed user).
+   * Keyed by alpha so a slider move never has to discard a still-valid result;
+   * a graph rebuild bumps `graphEpoch` (via `hw6InvalidateCaches`) so stale
+   * entries can never be served. Bounded by `HW6_CACHE_LIMIT`.
+   */
+  pageRankCache: new Map(),
+  pprCache: new Map(),
+  /** Recommendation-list memo: keyed by method|user|K|split|alpha. */
+  recCache: new Map(),
+  /** Monotonic counter giving cache entries a least-recently-used order. */
+  cacheClock: 0,
+  /** Incremented whenever the active graph (and therefore every cache) changes. */
+  graphEpoch: 0,
+  /** Programmatic alpha override; `null` means "read the slider". */
+  alphaContext: null,
+  /** Alpha selected by the last completed validation sweep, or `null`. */
+  selectedAlpha: null,
+  /** Completed validation sweep snapshot `{ epoch, rows, best, note }`. */
+  sweep: null,
+  /** Settings of the last completed primary comparison, for evidence. */
+  comparisonConfig: null,
+  /** The in-flight async evaluation token, or `null`. */
+  activeRun: null,
   /** Convergence records for the panel: `{ pagerank, ppr }`. */
   convergence: { pagerank: null, ppr: null },
 
@@ -234,6 +306,31 @@ const HW6_STATE = {
 
   /** Last self-check run, reused by `serializeVerification()`. */
   lastVerification: null,
+
+  /** Throttle clock for intra-chunk progress repaints. */
+  lastProgressPaint: 0,
+  /** Summary of the last finished run, kept visible after the panel hides. */
+  lastRunSummary: null,
+
+  /**
+   * Lifecycle of the most recent evaluation: `"idle"`, `"active"`,
+   * `"cancelled"`, `"failed"` or `"completed"`. Set by `hw6RunEvaluationAsync`
+   * and read by the exporters so a partial run can never masquerade as final.
+   */
+  runState: "idle",
+  /**
+   * Immutable snapshot of the last fully successful primary evaluation:
+   * `{ identity, config, comparisonRows, alphaSweepRows, selectedAlpha,
+   * convergence, recallReport, graphEpoch, completedAt }`. Exports and the
+   * two-user demo read from here when the current run is not a clean completed
+   * one, so a cancelled or failed run cannot mix with earlier evidence, and a
+   * later slider change cannot mutate it.
+   */
+  completedSnapshot: null,
+  /** Monotonic counter giving each completed run a human-readable identity. */
+  runCounter: 0,
+  /** Prior disabled-state of guarded controls, captured while a run is active. */
+  guardPriorDisabled: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -372,19 +469,89 @@ function hw6SetAlpha(value) {
   const clamped = Math.min(0.95, Math.max(0.50, Number.isFinite(numeric) ? numeric : 0.85));
   if (slider) slider.value = String(clamped);
   if (readout) readout.textContent = clamped.toFixed(2);
-  hw6InvalidateCaches();
+  // Pure setter: propagation caches are keyed by alpha, so changing the value
+  // must NOT drop still-valid results for other alphas (that no-op invalidation
+  // was what made a 1 -> 2 -> 1 sequence recompute every walk).
 }
 
 /**
- * Drop cached PageRank / PPR / recommendation results because a control changed.
- * `graph.js` owns the graph and any cache of its own; if it exposes a `stale`
- * flag we set it, but no field is invented here.
+ * The alpha used for programmatic evaluation. An explicit context (`alphaContext`)
+ * wins, so the validation sweep and the primary comparison can run at their own
+ * alpha without moving the user's demo slider; otherwise the slider is read.
+ *
+ * @returns {number}
+ */
+function hw6EvalAlpha() {
+  const context = HW6_STATE.alphaContext;
+  return Number.isFinite(context) ? Number(context) : hw6ReadAlpha();
+}
+
+/**
+ * Stable string key for one alpha at four decimals (the slider's own precision).
+ *
+ * @param {number} alpha
+ * @returns {string}
+ */
+function hw6AlphaKey(alpha) {
+  return Number(alpha).toFixed(4);
+}
+
+/**
+ * Read a cache entry, refreshing its recency.
+ *
+ * @param {Map} map
+ * @param {string} key
+ * @returns {*} The cached value, or `undefined`.
+ */
+function hw6CacheGet(map, key) {
+  const entry = map.get(key);
+  if (entry === undefined) return undefined;
+  entry.clock = (HW6_STATE.cacheClock += 1);
+  return entry.value;
+}
+
+/**
+ * Write a cache entry, evicting the least-recently-used one when over `limit`.
+ *
+ * @param {Map} map
+ * @param {string} key
+ * @param {*} value
+ * @param {number} limit
+ * @returns {void}
+ */
+function hw6CacheSet(map, key, value, limit) {
+  map.set(key, { value: value, clock: (HW6_STATE.cacheClock += 1) });
+  if (limit > 0 && map.size > limit) {
+    let oldestKey = null;
+    let oldestClock = Infinity;
+    map.forEach(function (entry, entryKey) {
+      if (entry.clock < oldestClock) {
+        oldestClock = entry.clock;
+        oldestKey = entryKey;
+      }
+    });
+    if (oldestKey !== null) map.delete(oldestKey);
+  }
+}
+
+/**
+ * Drop cached PageRank / PPR / recommendation results because the graph (or the
+ * underlying data) changed. `graph.js` owns the graph and any cache of its own;
+ * if it exposes a `stale` flag we set it, but no field is invented here.
+ *
+ * A graph change is the only event that invalidates these caches: alpha and the
+ * target user are part of every key, so they need no invalidation.
  *
  * @returns {void}
  */
 function hw6InvalidateCaches() {
-  HW6_STATE.pageRank = null;
-  HW6_STATE.ppr = null;
+  HW6_STATE.pageRankCache.clear();
+  HW6_STATE.pprCache.clear();
+  HW6_STATE.recCache.clear();
+  HW6_STATE.graphEpoch += 1;
+  HW6_STATE.sweep = null;
+  HW6_STATE.selectedAlpha = null;
+  HW6_STATE.comparisonConfig = null;
   const viewState = typeof GRAPH_VIEW_STATE !== "undefined" ? GRAPH_VIEW_STATE : null;
   if (viewState && typeof viewState === "object" && "stale" in viewState) {
     viewState.stale = true;
@@ -767,6 +934,20 @@ function hw6CohortExclusions(splitName) {
 // initialised from a seeded PRNG and the mini-batch order is drawn from the same
 // generator, so two runs on the same data produce the same model.
 //
+// Loss (per mini-batch of actual size `size`):
+//   L = mean((rating - (u . i + globalMean))^2)
+//     + (sum(uFactors^2) + sum(iFactors^2)) * reg / size
+// The L2 term is divided by the ACTUAL batch size, so the last partial batch
+// (train.length % batchSize) is regularised by its own size; this matches the
+// previous assignment's normalisation convention.
+//
+// Differences from the submitted HW5 model, disclosed rather than hidden: HW6
+// uses a fixed batchSize of 512 (HW5 default 64), 30 epochs (HW5 default 20),
+// and a seeded Box-Muller initialisation (HW5 used unseeded tf.randomNormal).
+// No previously saved HW5 weights are loaded: nothing here reads stored weights
+// from disk or storage, so this is the same model FAMILY and objective as HW5,
+// not the identical trained parameters.
+//
 // This block is NOT part of the homework stubs. Students report the checkpoint
 // recorded in `MF_INFO`; they do not rebuild the model.
 // ---------------------------------------------------------------------------
@@ -851,20 +1032,31 @@ function hw6MfRmse(split) {
  * @returns {Promise<MfModel|null>} The trained model, or `null` when the data or
  *   the TensorFlow.js runtime is not ready, or when training throws.
  */
-function hw6EnsureMf() {
+function hw6EnsureMf(run) {
   if (HW6_MF_TRAINING) return HW6_MF_TRAINING;
   if (HW6_MF_MODEL && MF_INFO.trainedAt !== null) return Promise.resolve(HW6_MF_MODEL);
   if (typeof tf === "undefined" || !HW6_STATE.splitReady) return Promise.resolve(null);
   const train = HW6_SPLIT.train;
   if (train.length === 0) return Promise.resolve(null);
 
-  HW6_MF_TRAINING = hw6TrainMf(train).then(
+  HW6_MF_TRAINING = hw6TrainMf(train, run).then(
     function (model) {
       HW6_MF_TRAINING = null;
+      // MF scores changed, so any memoised MF recommendation list is stale.
+      HW6_STATE.recCache.clear();
       return model;
     },
     function (error) {
       HW6_MF_TRAINING = null;
+      // A cancellation is not a training failure: leave no partial model and
+      // propagate the cancellation so the surrounding run is marked cancelled.
+      if (hw6IsCancelledError(error)) {
+        hw6DisposeMf();
+        MF_INFO.checkpoint = null;
+        MF_INFO.validationRMSE = null;
+        MF_INFO.trainedAt = null;
+        return Promise.reject(error);
+      }
       console.error("MF reference training failed:", error);
       // Cover failures raised before the inner try (variable / tensor setup).
       hw6DisposeMf();
@@ -886,9 +1078,13 @@ function hw6EnsureMf() {
  * `optimizer.minimize`, and never puts an async callback inside `tf.tidy`.
  *
  * @param {Rating[]} train Training rows.
+ * @param {{cancelled:boolean, startedAt:number}} [run] Optional active-run token:
+ *   when supplied, MF epoch progress is painted into the evaluation panel and a
+ *   cooperative Cancel is honoured at epoch boundaries (never mid-batch, so the
+ *   random order, objective, hyperparameters and checkpoint rule are unchanged).
  * @returns {Promise<MfModel|null>}
  */
-async function hw6TrainMf(train) {
+async function hw6TrainMf(train, run) {
   hw6DisposeMf();
   const F = MF_FACTORS;
   const userRows = Math.max(1, numUsers + 1);
@@ -950,7 +1146,7 @@ async function hw6TrainMf(train) {
               const it = tf.gather(itemFactors, tf.tensor1d(iIdx, "int32"));
               const pred = tf.sum(tf.mul(u, it), 1).add(globalMean);
               const mse = tf.losses.meanSquaredError(tf.tensor1d(target, "float32"), pred);
-              const l2 = userFactors.square().sum().add(itemFactors.square().sum()).mul(MF_CONFIG.reg);
+              const l2 = userFactors.square().sum().add(itemFactors.square().sum()).mul(MF_CONFIG.reg / size);
               return mse.add(l2);
             });
           },
@@ -976,6 +1172,24 @@ async function hw6TrainMf(train) {
         "Training MF reference: epoch " + epoch + "/" + MF_CONFIG.epochs +
         " \u2014 validation RMSE " + hw6Fmt(valRmse) + "\u2026",
       );
+      if (run) {
+        hw6UpdateProgress({
+          stage: "Training MF reference",
+          alpha: null, alphaIndex: epoch, alphaTotal: MF_CONFIG.epochs,
+          method: "mf", processed: epoch, total: MF_CONFIG.epochs,
+          elapsed: Date.now() - run.startedAt, backend: HW6_STATE.backend,
+          iteration: null, active: null,
+        });
+      }
+      if (run && run.cancelled) {
+        // Checkpoint boundary only: the epoch is complete, so nothing partial is
+        // baked into a model. Disposing here guarantees no half-trained baseline.
+        hw6DisposeMf();
+        MF_INFO.checkpoint = null;
+        MF_INFO.validationRMSE = null;
+        MF_INFO.trainedAt = null;
+        throw hw6CancelledError("MF reference training");
+      }
       if (typeof tf.nextFrame === "function") {
         try {
           await tf.nextFrame();
@@ -1004,11 +1218,16 @@ async function hw6TrainMf(train) {
     MF_INFO.trainedAt = new Date().toISOString();
     return HW6_MF_MODEL;
   } catch (error) {
-    console.error("MF reference training failed:", error);
     hw6DisposeMf();
     MF_INFO.checkpoint = null;
     MF_INFO.validationRMSE = null;
     MF_INFO.trainedAt = null;
+    if (hw6IsCancelledError(error)) {
+      // The epoch-boundary cancel already disposed and cleared; rethrow so the
+      // evaluation is marked cancelled rather than failed.
+      throw error;
+    }
+    console.error("MF reference training failed:", error);
     return null;
   }
 }
@@ -1019,14 +1238,16 @@ async function hw6TrainMf(train) {
  * failure). This is the single entry point every MF need goes through; it never
  * trains on page load.
  *
+ * @param {{cancelled:boolean, startedAt:number}} [run] Optional active-run token
+ *   used to report MF progress and honour a cooperative Cancel.
  * @returns {Promise<MfModel|null>}
  */
-async function hw6EnsureMfForNeed() {
+async function hw6EnsureMfForNeed(run) {
   if (HW6_MF_MODEL && MF_INFO.trainedAt !== null) return HW6_MF_MODEL;
   if (typeof tf === "undefined") return null;
   if (!HW6_STATE.splitReady) return null;
   hw6SetStatus("MF reference is not trained yet \u2014 training it now\u2026");
-  const model = await hw6EnsureMf();
+  const model = await hw6EnsureMf(run);
   if (model && MF_INFO.checkpoint !== null) {
     hw6SetStatus(
       "MF reference trained: " + MF_INFO.factors + " factors, checkpoint epoch " + MF_INFO.checkpoint +
@@ -1110,8 +1331,29 @@ function mfScores(userId) {
  * @returns {Float64Array} Movie scores in `graph.movieIds` order.
  */
 function movieScores(p, graph) {
-  // TODO(hw6): select the movie-node entries of `p`, in `graph.movieIds` order.
-  throw new Error("TODO(hw6): movieScores is not implemented yet.");
+  if (!p || typeof p.length !== "number") {
+    throw new Error("movieScores: p must be the node-probability vector from pageRank/personalizedPageRank");
+  }
+  if (!graph) {
+    throw new Error("movieScores: graph is required");
+  }
+
+  const ids = hw6MovieIds(graph);
+  const count = ids.length;
+  // No padding node: the output has exactly one entry per graph movie.
+  const out = new Float64Array(count);
+
+  if (Array.isArray(graph.movieNodes) && graph.movieNodes.length === count) {
+    for (let k = 0; k < count; k++) out[k] = Number(p[graph.movieNodes[k]]);
+    return out;
+  }
+
+  // Convention: user nodes are [0, nUsers) and movie nodes follow in order, so
+  // movie k's score is p[nUsers + k]. This keeps the raw algorithm score as-is
+  // (PageRank/PPR probability mass), never a rating or a normalised value.
+  const offset = Number.isFinite(graph.nUsers) ? Number(graph.nUsers) : hw6UserIds(graph).length;
+  for (let k = 0; k < count; k++) out[k] = Number(p[offset + k]);
+  return out;
 }
 
 /**
@@ -1148,8 +1390,63 @@ function movieScores(p, graph) {
  * @returns {RecommendedMovie[]}
  */
 function recommendTopK(method, userId, K, split) {
-  // TODO(hw6): filter the candidate pool, sort by score desc / id asc, slice to K.
-  throw new Error("TODO(hw6): recommendTopK is not implemented yet.");
+  if (method !== "popularity" && method !== "pagerank" && method !== "ppr" && method !== "mf") return [];
+  const requested = K === undefined || K === null ? HW6_K : Number(K);
+  if (!Number.isFinite(requested) || requested <= 0) return [];
+  const limit = Math.floor(requested);
+  const name = split === "val" ? "val" : "test";
+
+  // Memoise the ranked list. Recall and mean-list-popularity both need the same
+  // list for the same user, so without this the whole candidate set would be
+  // scored and sorted twice per user. The key includes alpha for graph methods,
+  // so an alpha change (or a graph rebuild, via `graphEpoch`) can never serve a
+  // stale list.
+  const alphaKey = method === "pagerank" || method === "ppr" ? hw6AlphaKey(hw6EvalAlpha()) : "na";
+  const recKey = method + "|" + userId + "|" + limit + "|" + name + "|" + HW6_STATE.graphEpoch + "|" + alphaKey;
+  const memo = hw6CacheGet(HW6_STATE.recCache, recKey);
+  if (memo !== undefined) return memo;
+
+  // Scores for every candidate movie, aligned to HW6_STATE.candidateIds. For
+  // pagerank/ppr this routes through the cached propagation and `movieScores`;
+  // a missing graph surfaces as an HW6_INTERFACE error (an integration gap),
+  // which is intentionally not swallowed here.
+  const scored = hw6ScoreVector(method, userId, hw6EvalAlpha(), name);
+  const ids = scored.movieIds;
+  const scores = scored.scores;
+  if (!ids || !ids.length) return [];
+
+  const excluded = hw6ExclusionSet(name, userId);
+  const items = [];
+  for (let i = 0; i < ids.length; i++) {
+    const movieId = ids[i];
+    if (excluded.has(movieId)) continue;
+    const score = Number(scores[i]);
+    // -Infinity marks a movie the method cannot place (e.g. an unscored MF row);
+    // it must never appear in a top-K list.
+    if (!Number.isFinite(score)) continue;
+    items.push({ movieId: movieId, score: score });
+  }
+
+  // Score descending; ties broken by ASCENDING raw movie id (readme section 5).
+  items.sort(function (a, b) {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.movieId - b.movieId;
+  });
+
+  const top = items.slice(0, limit);
+  const out = new Array(top.length);
+  for (let i = 0; i < top.length; i++) {
+    const movieId = top[i].movieId;
+    out[i] = {
+      movieId: movieId,
+      title: hw6Title(movieId),
+      genres: hw6Genres(movieId),
+      score: top[i].score,
+      popularity: hw6PopularityOf(movieId),
+    };
+  }
+  hw6CacheSet(HW6_STATE.recCache, recKey, out, HW6_CACHE_LIMIT.rec);
+  return out;
 }
 
 /**
@@ -1181,8 +1478,53 @@ function recommendTopK(method, userId, K, split) {
  * @returns {RecallReport}
  */
 function recallAtK(method, K, split) {
-  // TODO(hw6): macro-average Recall@K over the shared cohort, with exclusions.
-  throw new Error("TODO(hw6): recallAtK is not implemented yet.");
+  const requested = K === undefined || K === null ? HW6_K : Number(K);
+  const limit = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 0;
+  const name = split === "val" ? "val" : "test";
+
+  // Exactly the shared cohort helper, so all four methods report the same users.
+  const cohort = hw6SharedCohort(name);
+  const grades = HW6_STATE.gradesBySplit[name];
+  const perUser = [];
+  let recallSum = 0;
+
+  for (let i = 0; i < cohort.length; i++) {
+    const userId = cohort[i];
+    const excluded = hw6ExclusionSet(name, userId);
+    const gradeMap = grades.get(userId) || new Map();
+    // Relevant set: rating >= 4.0 in the split, in the training candidate pool,
+    // and passing this split's previously-rated exclusion rule.
+    const relevant = new Set();
+    gradeMap.forEach(function (rating, movieId) {
+      if (rating >= 4.0 && HW6_STATE.candidateSet.has(movieId) && !excluded.has(movieId)) {
+        relevant.add(movieId);
+      }
+    });
+
+    let hit = 0;
+    if (relevant.size > 0 && limit > 0) {
+      // Fresh per-split lists; never reuse the other split's recommendations.
+      const recs = recommendTopK(method, userId, limit, name);
+      for (let r = 0; r < recs.length; r++) {
+        if (relevant.has(recs[r].movieId)) hit++;
+      }
+    }
+
+    perUser.push({ userId: userId, relevant: relevant.size, hit: hit });
+    if (relevant.size > 0) recallSum += hit / relevant.size;
+  }
+
+  // Macro-average over the shared cohort; never divide by zero.
+  const recall = cohort.length > 0 ? recallSum / cohort.length : 0;
+  const exclusions = hw6CohortExclusions(name);
+
+  return {
+    recall: recall,
+    cohort: cohort,
+    excludedUnseen: exclusions.excludedUnseen,
+    excludedNoEligible: exclusions.excludedNoEligible,
+    perUser: perUser,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,16 +1859,20 @@ function hw6UserNodeIndex(graph, userId) {
  * @returns {PropagationResult}
  */
 function hw6RunPageRank(graph, alpha) {
-  const cached = HW6_STATE.pageRank;
-  if (cached && cached.graph === graph && cached.alpha === alpha) return cached;
+  const key = "pr|" + HW6_STATE.graphEpoch + "|" + hw6AlphaKey(alpha);
+  const cached = hw6CacheGet(HW6_STATE.pageRankCache, key);
+  if (cached && cached.graph === graph) return cached;
   const result = hw6AdapterPageRank(graph, alpha);
-  HW6_STATE.pageRank = { ...result, graph: graph, alpha: alpha };
-  return HW6_STATE.pageRank;
+  const entry = { ...result, graph: graph, alpha: alpha };
+  hw6CacheSet(HW6_STATE.pageRankCache, key, entry, HW6_CACHE_LIMIT.pageRank);
+  return entry;
 }
 
 /**
  * Cached PPR for the active graph, restart user and `alpha`. The cache key
- * includes alpha: changing alpha must never reuse a stale walk.
+ * includes alpha (and the graph epoch), so changing alpha or rebuilding the
+ * graph can never reuse a stale walk, while a 1 -> 2 -> 1 sequence reuses the
+ * first user's walk instead of recomputing it.
  *
  * @param {Object} graph
  * @param {number} userId
@@ -1534,13 +1880,135 @@ function hw6RunPageRank(graph, alpha) {
  * @returns {PropagationResult}
  */
 function hw6RunPPR(graph, userId, alpha) {
-  const cached = HW6_STATE.ppr;
-  if (cached && cached.graph === graph && cached.userId === userId && cached.alpha === alpha) return cached;
+  const key = "ppr|" + HW6_STATE.graphEpoch + "|" + userId + "|" + hw6AlphaKey(alpha);
+  const cached = hw6CacheGet(HW6_STATE.pprCache, key);
+  if (cached && cached.graph === graph) return cached;
   const seedNode = hw6UserNodeIndex(graph, userId);
   if (seedNode < 0) throw hw6InterfaceError("cannot map user " + userId + " to a graph node");
   const result = hw6AdapterPPR(graph, seedNode, alpha, userId);
-  HW6_STATE.ppr = { ...result, graph: graph, userId: userId, alpha: alpha };
-  return HW6_STATE.ppr;
+  const entry = { ...result, graph: graph, userId: userId, alpha: alpha };
+  hw6CacheSet(HW6_STATE.pprCache, key, entry, HW6_CACHE_LIMIT.ppr);
+  return entry;
+}
+
+/**
+ * Store one batched PPR result (from `graphPropagateBatch`) into the cache, in
+ * the same shape `hw6RunPPR` returns, so the synchronous evaluation path treats
+ * a pre-filled vector exactly like a freshly computed one.
+ *
+ * @param {Object} graph
+ * @param {number} userId
+ * @param {number} alpha
+ * @param {{p:Float64Array, iterations:number, residual:number, converged:boolean}} prop
+ * @returns {void}
+ */
+function hw6StorePprResult(graph, userId, alpha, prop) {
+  const key = "ppr|" + HW6_STATE.graphEpoch + "|" + userId + "|" + hw6AlphaKey(alpha);
+  const entry = {
+    scores: prop.p,
+    iterations: prop.iterations,
+    residual: prop.residual,
+    converged: prop.converged,
+    source: "graph.js:batch",
+    graph: graph,
+    userId: userId,
+    alpha: alpha,
+  };
+  hw6CacheSet(HW6_STATE.pprCache, key, entry, HW6_CACHE_LIMIT.ppr);
+}
+
+/**
+ * Store the batched global PageRank result into the cache (same shape as
+ * `hw6RunPageRank`).
+ *
+ * @param {Object} graph
+ * @param {number} alpha
+ * @param {{p:Float64Array, iterations:number, residual:number, converged:boolean}} prop
+ * @returns {void}
+ */
+function hw6StorePageRankResult(graph, alpha, prop) {
+  const key = "pr|" + HW6_STATE.graphEpoch + "|" + hw6AlphaKey(alpha);
+  const entry = {
+    scores: prop.p,
+    iterations: prop.iterations,
+    residual: prop.residual,
+    converged: prop.converged,
+    source: "graph.js:batch",
+    graph: graph,
+    alpha: alpha,
+  };
+  hw6CacheSet(HW6_STATE.pageRankCache, key, entry, HW6_CACHE_LIMIT.pageRank);
+}
+
+/**
+ * Cache key for one user's PPR walk at one alpha, at the current graph epoch. The
+ * epoch makes a graph rebuild miss every old key, and alpha/user are part of the
+ * key, so a cache hit is only ever a genuinely reusable walk. Split is omitted
+ * because a PPR vector is a property of the graph and the restart user, not of
+ * the split it happens to be scored on.
+ *
+ * @param {number} userId
+ * @param {number} alpha
+ * @returns {string}
+ */
+function hw6PprCacheKey(userId, alpha) {
+  return "ppr|" + HW6_STATE.graphEpoch + "|" + userId + "|" + hw6AlphaKey(alpha);
+}
+
+/**
+ * Cache key for the global PageRank walk at one alpha, at the current epoch.
+ *
+ * @param {number} alpha
+ * @returns {string}
+ */
+function hw6PageRankCacheKey(alpha) {
+  return "pr|" + HW6_STATE.graphEpoch + "|" + hw6AlphaKey(alpha);
+}
+
+/**
+ * Non-mutating lookup of a reusable PPR walk. Returns the cached entry only when
+ * it exists for the current epoch and was computed on the same graph object, so
+ * a rebuild can never serve a stale vector. Unlike `hw6CacheGet` it does not
+ * refresh recency, which keeps a read-only prefill scan from reordering the LRU.
+ *
+ * @param {Object} graph
+ * @param {number} userId
+ * @param {number} alpha
+ * @returns {PropagationResult|null}
+ */
+function hw6PeekPpr(graph, userId, alpha) {
+  const entry = HW6_STATE.pprCache.get(hw6PprCacheKey(userId, alpha));
+  return entry && entry.value && entry.value.graph === graph ? entry.value : null;
+}
+
+/**
+ * Non-mutating lookup of the reusable global PageRank walk at `alpha`.
+ *
+ * @param {Object} graph
+ * @param {number} alpha
+ * @returns {PropagationResult|null}
+ */
+function hw6PeekPageRank(graph, alpha) {
+  const entry = HW6_STATE.pageRankCache.get(hw6PageRankCacheKey(alpha));
+  return entry && entry.value && entry.value.graph === graph ? entry.value : null;
+}
+
+/**
+ * Drop every cached PPR vector for one alpha (across users) at the current graph
+ * epoch. Used after a sweep alpha has been scored, so the sweep holds at most
+ * one alpha of val vectors at a time instead of all four.
+ *
+ * @param {number} alpha
+ * @returns {void}
+ */
+function hw6DropPprAlpha(alpha) {
+  const suffix = "|" + hw6AlphaKey(alpha);
+  const prefix = "ppr|" + HW6_STATE.graphEpoch + "|";
+  const doomed = [];
+  HW6_STATE.pprCache.forEach(function (entry, key) {
+    if (key.indexOf(prefix) === 0 && key.slice(-suffix.length) === suffix) doomed.push(key);
+  });
+  for (let i = 0; i < doomed.length; i++) HW6_STATE.pprCache.delete(doomed[i]);
 }
 
 /**
@@ -1646,6 +2114,97 @@ function hw6RecordRecommendationRows(userId, method, alpha, recs) {
 }
 
 /**
+ * Clear the recorded recommendation rows/keys. Called at the start of each
+ * completed primary evaluation so the exported recommendations reflect exactly
+ * the last completed run's settings instead of accumulating lists from unrelated
+ * slider positions or earlier runs.
+ *
+ * @returns {void}
+ */
+function hw6ResetRecommendationRows() {
+  HW6_STATE.recommendationRows.length = 0;
+  HW6_STATE.recommendationKeys.clear();
+}
+
+/**
+ * Deterministically record the assignment's required recommendation evidence for
+ * the two fixed common-cohort users: their four-method Top-10 lists at the
+ * selected primary alpha, plus the three controlled PPR settings (user A @ 0.85,
+ * user B @ 0.85, user A @ 0.50). This is what makes `recommendations.csv`
+ * non-empty after Evaluate alone, and it never depends on the demo slider.
+ *
+ * Each method's two lists are computed under an explicit alpha context so the
+ * slider is not consulted or moved. Lists that cannot be produced (for example
+ * MF before it is trained) are skipped rather than exported as invented rows.
+ *
+ * @param {number} alpha Selected primary alpha for PageRank / PPR.
+ * @returns {{users:number[], methods:Array<Object>}} Summary for the snapshot.
+ */
+function hw6RecordCohortRecommendations(alpha) {
+  const cohort = hw6SharedCohort("test");
+  if (cohort.length < 2) return { users: cohort.slice(0, 2), methods: [] };
+  const userA = cohort[0];
+  const userB = cohort[1];
+  const methods = ["popularity", "pagerank", "ppr", "mf"];
+  const summary = [];
+
+  const withContext = function (value, fn) {
+    const previous = HW6_STATE.alphaContext;
+    HW6_STATE.alphaContext = value;
+    try {
+      return fn();
+    } finally {
+      HW6_STATE.alphaContext = previous;
+    }
+  };
+
+  for (let i = 0; i < methods.length; i++) {
+    const method = methods[i];
+    const usesAlpha = method === "pagerank" || method === "ppr";
+    const methodAlpha = usesAlpha ? alpha : null;
+    let listA = null; let listB = null;
+    try {
+      listA = usesAlpha ? withContext(alpha, function () { return recommendTopK(method, userA, HW6_K, "test"); }) : recommendTopK(method, userA, HW6_K, "test");
+    } catch (e) { listA = null; }
+    try {
+      listB = usesAlpha ? withContext(alpha, function () { return recommendTopK(method, userB, HW6_K, "test"); }) : recommendTopK(method, userB, HW6_K, "test");
+    } catch (e) { listB = null; }
+    if (listA) hw6RecordRecommendationRows(userA, method, methodAlpha, listA);
+    else throw new Error("failed to generate " + method + " for user " + userA);
+    if (listB) hw6RecordRecommendationRows(userB, method, methodAlpha, listB);
+    else throw new Error("failed to generate " + method + " for user " + userB);
+    let common = null;
+    if (listA && listB) {
+      const set = new Set(listA.map(function (r) { return r.movieId; }));
+      common = 0; listB.forEach(function (r) { if (set.has(r.movieId)) common += 1; });
+    }
+    summary.push({ method: method, alpha: methodAlpha, meanPopularityA: hw6MeanPopularity(listA), meanPopularityB: hw6MeanPopularity(listB), common: common, sizeA: listA.length, sizeB: listB.length });
+  }
+
+  // The readme section 6.2 controlled PPR settings, always at their fixed alphas.
+  const controls = [
+    { user: userA, alpha: 0.85, label: "baseline" },
+    { user: userB, alpha: 0.85, label: "change seed only" },
+    { user: userA, alpha: 0.50, label: "change alpha only" },
+  ];
+  controls.forEach(function (control) {
+    try {
+      const recs = withContext(control.alpha, function () { return recommendTopK("ppr", control.user, HW6_K, "test"); });
+      if (recs && recs.length === HW6_K) hw6RecordRecommendationRows(control.user, "ppr", control.alpha, recs);
+      else throw new Error("incomplete ppr controls");
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  return {
+    users: [userA, userB],
+    methods: summary,
+    rows: hw6CloneRows(HW6_STATE.recommendationRows),
+  };
+}
+
+/**
  * Run one propagation pass and store its convergence record for the panel.
  *
  * @param {"pagerank"|"ppr"} kind
@@ -1703,7 +2262,7 @@ function hw6ConvergenceVerdict(record) {
  */
 async function hw6RunComparison(split) {
   const name = split === "val" ? "val" : "test";
-  const alpha = hw6ReadAlpha();
+  const alpha = hw6EvalAlpha();
   const cohort = hw6SharedCohort(name);
   const exclusions = hw6CohortExclusions(name);
   const methods = ["popularity", "pagerank", "ppr", "mf"];
@@ -1781,6 +2340,842 @@ function hw6MeanListPopularityForCohort(method, cohort, split, alpha) {
   return users > 0 ? total / users : null;
 }
 
+// ---------------------------------------------------------------------------
+// Asynchronous evaluation engine (progress + cancel)
+//
+// The synchronous runners above stay the harness-facing contract. This engine
+// drives the UI: it pre-fills the propagation caches with batched, yielding
+// walks (so the browser paints and Cancel works), then calls the very same
+// synchronous runners, which become cache hits. Recall and mean-list popularity
+// reuse one memoised list per user via `recommendTopK`'s cache.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the cancellation error used by the async engine.
+ *
+ * @param {string} [where]
+ * @returns {Error}
+ */
+function hw6CancelledError(where) {
+  const error = new Error("HW6_RUN_CANCELLED" + (where ? ": " + where : ""));
+  error.hw6Cancelled = true;
+  return error;
+}
+
+/**
+ * True when a thrown value is the engine's cancellation error.
+ *
+ * @param {*} error
+ * @returns {boolean}
+ */
+function hw6IsCancelledError(error) {
+  return !!(error && error.hw6Cancelled === true);
+}
+
+/** @returns {Object} The progress-panel elements (any may be `null`). */
+function hw6ProgressElements() {
+  return {
+    panel: document.getElementById("hw6-progress"),
+    stage: document.getElementById("hw6-progress-stage"),
+    pct: document.getElementById("hw6-progress-pct"),
+    bar: document.getElementById("hw6-progress-bar"),
+    detail: document.getElementById("hw6-progress-detail"),
+  };
+}
+
+/**
+ * Paint the live progress panel from an engine status object.
+ *
+ * @param {{stage:(string|null), alpha:(number|null), alphaIndex:(number|null),
+ *          alphaTotal:(number|null), method:(string|null), processed:number,
+ *          total:(number|null), elapsed:(number|null), backend:(string|null)}} info
+ * @returns {void}
+ */
+function hw6UpdateProgress(info) {
+  const el = hw6ProgressElements();
+  if (!el.panel) return;
+  el.panel.classList.remove("hidden");
+
+  const head = [];
+  if (info.stage) head.push(info.stage);
+  if (info.alpha !== null && info.alpha !== undefined) {
+    let alphaText = "alpha " + Number(info.alpha).toFixed(2);
+    if (info.alphaIndex && info.alphaTotal) alphaText += " (" + info.alphaIndex + "/" + info.alphaTotal + ")";
+    head.push(alphaText);
+  }
+  if (info.method) head.push("method " + info.method);
+  if (el.stage) el.stage.textContent = head.length ? head.join(" \u00b7 ") : "Working\u2026";
+
+  const total = info.total;
+  const processed = info.processed || 0;
+  const determinate = typeof total === "number" && Number.isFinite(total) && total > 0;
+  if (determinate) {
+    const pct = Math.max(0, Math.min(100, (processed / total) * 100));
+    if (el.bar) {
+      el.bar.classList.remove("progress-bar--indeterminate");
+      el.bar.style.width = pct.toFixed(1) + "%";
+    }
+    if (el.pct) el.pct.textContent = pct.toFixed(0) + "% (" + processed + "/" + total + ")";
+  } else {
+    if (el.bar) {
+      el.bar.classList.add("progress-bar--indeterminate");
+      el.bar.style.width = "100%";
+    }
+    if (el.pct) el.pct.textContent = "\u2014";
+  }
+
+  const detail = [];
+  if (info.elapsed !== null && info.elapsed !== undefined) detail.push("elapsed " + (info.elapsed / 1000).toFixed(1) + " s");
+  if (info.iteration !== null && info.iteration !== undefined) {
+    detail.push("iteration " + info.iteration + (info.active !== null && info.active !== undefined ? " \u00b7 active " + info.active : ""));
+  }
+  if (info.backend) detail.push("backend " + info.backend);
+  if (el.detail) el.detail.textContent = detail.join(" \u00b7 ");
+}
+
+/**
+ * Throttled intra-chunk progress update, driven by the batched kernel's
+ * `onIteration` hook. It reports the stage, the sweep alpha index, the number of
+ * completed cohort users, the current iteration and the still-active column
+ * count, so the panel keeps moving during a slow 64-user chunk instead of
+ * freezing between chunk boundaries. Repaints are throttled to
+ * `HW6_PROGRESS_MIN_REPAINT_MS` to avoid churning the DOM on every iteration.
+ *
+ * @param {Object} meta `{ stage, alphaIndex, alphaTotal, method }`
+ * @param {number} alpha
+ * @param {{cancelled:boolean, startedAt:number}} run
+ * @param {number} processed Cohort users completed before this chunk.
+ * @param {number} total     Cohort users in this stage.
+ * @param {number} iteration Kernel iteration just finished.
+ * @param {number} active    Columns still iterating.
+ * @param {number} chunkSize Columns in this chunk.
+ * @returns {void}
+ */
+function hw6UpdateProgressChunk(meta, alpha, run, processed, total, iteration, active, chunkSize) {
+  const now = Date.now();
+  if (HW6_STATE.lastProgressPaint !== 0 && now - HW6_STATE.lastProgressPaint < HW6_PROGRESS_MIN_REPAINT_MS) {
+    return;
+  }
+  HW6_STATE.lastProgressPaint = now;
+  hw6UpdateProgress({
+    stage: meta.stage,
+    alpha: alpha,
+    alphaIndex: meta.alphaIndex,
+    alphaTotal: meta.alphaTotal,
+    method: meta.method,
+    processed: processed,
+    total: total,
+    elapsed: now - run.startedAt,
+    backend: HW6_STATE.backend,
+    iteration: iteration,
+    active: active,
+    chunkSize: chunkSize,
+  });
+}
+
+/**
+ * Retain a final, readable run summary after the progress panel hides, so
+ * cold/warm elapsed time and the backend are not lost when a run completes.
+ *
+ * @param {{stage:(string|null), elapsedMs:(number|null), backend:(string|null),
+ *          detail:(string|null)}} summary
+ * @returns {void}
+ */
+function hw6RecordRunSummary(summary) {
+  HW6_STATE.lastRunSummary = summary;
+  const el = document.getElementById("hw6-run-summary");
+  if (!el) return;
+  const parts = [];
+  if (summary.stage) parts.push(summary.stage);
+  if (summary.detail) parts.push(summary.detail);
+  if (summary.elapsedMs !== null && summary.elapsedMs !== undefined) parts.push("elapsed " + (summary.elapsedMs / 1000).toFixed(1) + " s");
+  if (summary.backend) parts.push("backend " + summary.backend);
+  el.textContent = parts.join(" \u00b7 ");
+}
+
+/** @returns {void} */
+function hw6HideProgress() {
+  const el = hw6ProgressElements();
+  if (el.panel) el.panel.classList.add("hidden");
+}
+
+/**
+ * Toggle the "a run is in flight" UI state: conflicting buttons are disabled so
+ * two evaluations cannot race, and the Cancel button is enabled only while a run
+ * is active.
+ *
+ * @param {boolean} running
+ * @returns {void}
+ */
+function hw6SetRunning(running) {
+  if (running) {
+    // Record each guard's own prior disabled state, then disable it. Restoring
+    // the recorded value (rather than a blanket enable) preserves any control
+    // that was already unavailable for an independent reason.
+    HW6_STATE.guardPriorDisabled = {};
+    for (let i = 0; i < HW6_RUN_GUARD_IDS.length; i++) {
+      const id = HW6_RUN_GUARD_IDS[i];
+      const button = document.getElementById(id);
+      if (!button) continue;
+      HW6_STATE.guardPriorDisabled[id] = !!button.disabled;
+      button.disabled = true;
+    }
+    for (let i = 0; i < HW6_RUN_GUARD_INPUTS.length; i++) {
+      const id = HW6_RUN_GUARD_INPUTS[i];
+      const input = document.getElementById(id);
+      if (!input) continue;
+      HW6_STATE.guardPriorDisabled[id] = !!input.disabled;
+      input.disabled = true;
+    }
+  } else {
+    const prior = HW6_STATE.guardPriorDisabled || {};
+    for (let i = 0; i < HW6_RUN_GUARD_IDS.length; i++) {
+      const id = HW6_RUN_GUARD_IDS[i];
+      const button = document.getElementById(id);
+      if (button && Object.prototype.hasOwnProperty.call(prior, id)) button.disabled = prior[id];
+    }
+    for (let i = 0; i < HW6_RUN_GUARD_INPUTS.length; i++) {
+      const id = HW6_RUN_GUARD_INPUTS[i];
+      const input = document.getElementById(id);
+      if (input && Object.prototype.hasOwnProperty.call(prior, id)) input.disabled = prior[id];
+    }
+    HW6_STATE.guardPriorDisabled = null;
+  }
+  const cancel = document.getElementById("hw6-cancel");
+  if (cancel) cancel.disabled = !running;
+  if (!running) HW6_STATE.activeRun = null;
+}
+
+/**
+ * True while an evaluation is in flight. Used to refuse conflicting direct
+ * actions (self-checks that swap the graph, a rebuild, a second comparison)
+ * even if a caller bypasses the disabled buttons.
+ *
+ * @returns {boolean}
+ */
+function hw6EvaluationActive() {
+  return !!HW6_STATE.activeRun;
+}
+
+/**
+ * Convenience guard: when an evaluation is in flight, report why `what` is
+ * unavailable and return `true` so the caller can bail early.
+ *
+ * @param {string} what Human label for the refused action.
+ * @returns {boolean}
+ */
+function hw6RefuseIfBusy(what) {
+  if (!hw6EvaluationActive()) return false;
+  hw6SetStatus(what + " is disabled while an evaluation is running. Wait or press Cancel.");
+  return true;
+}
+
+/** @returns {void} Request cancellation of the in-flight run, if any. */
+function hw6RequestCancel() {
+  const run = HW6_STATE.activeRun;
+  if (!run) return;
+  run.cancelled = true;
+  hw6SetStatus("Cancelling\u2026 the run stops at the next yield point; its partial result is not presented as final.");
+}
+
+/**
+ * Pre-fill the PPR cache for a whole cohort at one alpha using the batched
+ * engine, reporting progress and honouring cancellation.
+ *
+ * @param {Object} graph
+ * @param {number[]} cohort
+ * @param {number} alpha
+ * @param {Object} meta `{ stage, alphaIndex, alphaTotal, method }`
+ * @param {{cancelled:boolean, startedAt:number}} run
+ * @returns {Promise<void>}
+ */
+async function hw6PrefillPpr(graph, cohort, alpha, meta, run) {
+  const n = hw6NodeCount(graph);
+  if (!n) return;
+  const total = cohort.length;
+  // Only walk the users whose (epoch, user, alpha) key is not already cached. A
+  // repeat of an identical evaluation therefore dispatches no propagation
+  // kernels at all: every entry is a genuine cache hit on this graph.
+  const pendingUsers = [];
+  const pendingRestarts = [];
+  let cachedCount = 0;
+  for (let i = 0; i < cohort.length; i++) {
+    const userId = cohort[i];
+    if (hw6PeekPpr(graph, userId, alpha)) {
+      cachedCount += 1;
+      continue;
+    }
+    const seedNode = hw6UserNodeIndex(graph, userId);
+    if (seedNode < 0) continue;
+    const restart = new Float64Array(n);
+    restart[seedNode] = 1;
+    pendingUsers.push(userId);
+    pendingRestarts.push(restart);
+  }
+  const pendingTotal = pendingRestarts.length;
+  hw6UpdateProgress({ stage: meta.stage, alpha: alpha, alphaIndex: meta.alphaIndex, alphaTotal: meta.alphaTotal, method: meta.method, processed: cachedCount, total: total, elapsed: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+  for (let start = 0; start < pendingTotal; start += HW6_BATCH_SIZE) {
+    if (run.cancelled) throw hw6CancelledError("pre-fill PPR");
+    const chunkR = pendingRestarts.slice(start, start + HW6_BATCH_SIZE);
+    const results = await graphPropagateBatch(chunkR, alpha, {
+      tol: HW6_TOLERANCE,
+      maxIter: HW6_MAX_ITERATIONS,
+      maxYieldGapMs: HW6_YIELD_GAP_MS,
+      shouldCancel: function () { return run.cancelled; },
+      onIteration: function (iter, active) {
+        const finished = cachedCount + Math.min(start, pendingTotal);
+        const totalCount = total;
+        hw6UpdateProgressChunk(meta, alpha, run, finished, totalCount, iter, active, chunkR.length);
+      },
+    });
+    for (let k = 0; k < results.length; k++) {
+      hw6StorePprResult(graph, pendingUsers[start + k], alpha, results[k]);
+    }
+    hw6UpdateProgress({ stage: meta.stage, alpha: alpha, alphaIndex: meta.alphaIndex, alphaTotal: meta.alphaTotal, method: meta.method, processed: cachedCount + Math.min(start + chunkR.length, pendingTotal), total: total, elapsed: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+  }
+}
+
+/**
+ * Pre-fill the cached global PageRank for one alpha (a single uniform walk).
+ *
+ * @param {Object} graph
+ * @param {number} alpha
+ * @param {{cancelled:boolean, startedAt:number}} run
+ * @param {Object} meta
+ * @returns {Promise<void>}
+ */
+async function hw6PrefillGlobalPageRank(graph, alpha, run, meta) {
+  const n = hw6NodeCount(graph);
+  if (!n) return;
+  // Reuse a walk already computed for this graph epoch and alpha.
+  if (hw6PeekPageRank(graph, alpha)) {
+    hw6UpdateProgress({ stage: meta.stage, alpha: alpha, alphaIndex: null, alphaTotal: null, method: meta.method, processed: 1, total: 1, elapsed: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+    return;
+  }
+  const restart = new Float64Array(n);
+  const value = 1 / n;
+  for (let i = 0; i < n; i++) restart[i] = value;
+  hw6UpdateProgress({ stage: meta.stage, alpha: alpha, alphaIndex: meta.alphaIndex, alphaTotal: meta.alphaTotal, method: meta.method, processed: 0, total: 1, elapsed: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+  const results = await graphPropagateBatch([restart], alpha, {
+    tol: HW6_TOLERANCE,
+    maxIter: HW6_MAX_ITERATIONS,
+    maxYieldGapMs: HW6_YIELD_GAP_MS,
+    shouldCancel: function () { return run.cancelled; },
+    onIteration: function (iter, active) {
+      hw6UpdateProgressChunk(meta, alpha, run, 0, 1, iter, active, 1);
+    },
+  });
+  hw6StorePageRankResult(graph, alpha, results[0]);
+  hw6UpdateProgress({ stage: meta.stage, alpha: alpha, alphaIndex: null, alphaTotal: null, method: meta.method, processed: 1, total: 1, elapsed: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+}
+
+/**
+ * Async validation sweep: pre-fill each alpha's val PPR vectors, score the
+ * synchronous recall (cache hits), then drop that alpha's vectors to bound peak
+ * memory. Selection uses validation recall only; ties toward the smaller alpha.
+ *
+ * @param {Object} graph
+ * @param {{cancelled:boolean, startedAt:number}} run
+ * @returns {Promise<{rows:Array<Object>, best:(number|null), note:string}>}
+ */
+async function hw6AsyncAlphaSweep(graph, run) {
+  const cohort = hw6SharedCohort("val");
+  const rows = [];
+  let best = null;
+  let bestRecall = -Infinity;
+  let note = "";
+
+  for (let i = 0; i < ALPHA_GRID.length; i++) {
+    if (run.cancelled) throw hw6CancelledError("validation sweep");
+    const alpha = ALPHA_GRID[i];
+    await hw6PrefillPpr(graph, cohort, alpha, { stage: "Validation sweep", alphaIndex: i + 1, alphaTotal: ALPHA_GRID.length, method: "ppr" }, run);
+    if (run.cancelled) throw hw6CancelledError("validation sweep");
+
+    const previousContext = HW6_STATE.alphaContext;
+    HW6_STATE.alphaContext = alpha;
+    const row = { alpha: alpha, recall: null, cohortSize: cohort.length, error: null };
+    try {
+      const report = recallAtK("ppr", HW6_K, "val");
+      row.recall = Number(report.recall);
+      if (Array.isArray(report.cohort)) row.cohortSize = report.cohort.length;
+    } catch (error) {
+      row.error = String(error && error.message ? error.message : error);
+    } finally {
+      HW6_STATE.alphaContext = previousContext;
+    }
+    rows.push(row);
+    hw6DropPprAlpha(alpha);
+  }
+
+  // Atomic, complete selection: an alpha is only selected when EVERY row is
+  // valid (four finite recalls, no error). A single failed alpha invalidates the
+  // whole sweep so a partial sweep can never select a setting, cache itself as
+  // reusable or license a completion claim. Ties keep the smaller alpha because
+  // the comparison is strict `>` walking the ascending grid.
+  let invalidReason = "";
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].error) { invalidReason = "alpha " + hw6Fmt(rows[i].alpha, 2) + " failed (" + rows[i].error + ")"; break; }
+    if (!Number.isFinite(rows[i].recall)) { invalidReason = "alpha " + hw6Fmt(rows[i].alpha, 2) + " produced no finite recall"; break; }
+  }
+  if (rows.length !== ALPHA_GRID.length && !invalidReason) {
+    invalidReason = "evaluated " + rows.length + " of " + ALPHA_GRID.length + " alphas";
+  }
+  if (!invalidReason) {
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].recall > bestRecall) {
+        bestRecall = rows[i].recall;
+        best = rows[i].alpha;
+      }
+    }
+  } else {
+    best = null;
+    note = invalidReason;
+  }
+
+  HW6_STATE.alphaSweepRows = rows;
+  HW6_STATE.alphaSweepNote = note;
+  return { rows: rows, best: best, note: note };
+}
+
+/**
+ * Async primary comparison on the TEST cohort at `alpha`. PageRank/PPR vectors
+ * are pre-filled per cohort user, then the synchronous comparison reads them
+ * from the cache; recall and mean popularity share one memoised list per user.
+ *
+ * @param {Object} graph
+ * @param {number} alpha
+ * @param {{cancelled:boolean, startedAt:number}} run
+ * @returns {Promise<Array<Object>>}
+ */
+async function hw6AsyncComparison(graph, alpha, run) {
+  const name = "test";
+  const cohort = hw6SharedCohort(name);
+  const exclusions = hw6CohortExclusions(name);
+  const methods = ["popularity", "pagerank", "ppr", "mf"];
+  const rows = [];
+
+  // The four-method comparison needs MF, so this is a legitimate lazy trigger.
+  // The run token lets MF report epoch progress and honour a Cancel at an epoch
+  // boundary (the algorithm, seed and checkpoint rule are unchanged).
+  await hw6EnsureMfForNeed(run);
+  const mfReady = HW6_MF_MODEL !== null && MF_INFO.trainedAt !== null;
+  const seedUser = hw6ReadNumber("seed-user-select", Number.NaN);
+  const seed = Number.isFinite(seedUser) ? seedUser : cohort.length ? cohort[0] : null;
+
+  const previousContext = HW6_STATE.alphaContext;
+  HW6_STATE.alphaContext = alpha;
+  try {
+    for (let m = 0; m < methods.length; m++) {
+      if (run.cancelled) throw hw6CancelledError("comparison");
+      const method = methods[m];
+      const usesAlpha = method === "pagerank" || method === "ppr";
+      const row = {
+        method: method, split: name, alpha: usesAlpha ? alpha : null, recall: null,
+        cohortSize: cohort.length, excludedUnseen: exclusions.excludedUnseen,
+        excludedNoEligible: exclusions.excludedNoEligible, meanPopularity: null,
+        iterations: null, residual: null, converged: null, error: null, note: null,
+      };
+      try {
+        if (method === "mf" && !mfReady) {
+          row.note = "MF not trained yet \u2014 its recall is not meaningful.";
+        } else {
+          if (usesAlpha && graph) {
+            if (method === "pagerank") {
+              await hw6PrefillGlobalPageRank(graph, alpha, run, { stage: "Primary comparison", method: "pagerank" });
+              hw6RunAndRecordConvergence("pagerank", graph, alpha);
+            } else {
+              await hw6PrefillPpr(graph, cohort, alpha, { stage: "Primary comparison", method: "ppr" }, run);
+              if (seed !== null) hw6RunAndRecordConvergence("ppr", graph, alpha, seed);
+            }
+          }
+          if (run.cancelled) throw hw6CancelledError("comparison");
+          const report = recallAtK(method, HW6_K, name);
+          row.recall = Number(report.recall);
+          if (Array.isArray(report.cohort)) row.cohortSize = report.cohort.length;
+          if (Number.isFinite(Number(report.excludedUnseen))) row.excludedUnseen = Number(report.excludedUnseen);
+          if (Number.isFinite(Number(report.excludedNoEligible))) row.excludedNoEligible = Number(report.excludedNoEligible);
+          row.meanPopularity = hw6MeanListPopularityForCohort(method, cohort, name, alpha);
+          const record = usesAlpha ? HW6_STATE.convergence[method === "ppr" ? "ppr" : "pagerank"] : null;
+          if (record) {
+            row.iterations = record.iterations;
+            row.residual = record.residual;
+            row.converged = hw6ConvergenceVerdict(record).value;
+          }
+        }
+      } catch (error) {
+        if (hw6IsCancelledError(error)) throw error;
+        row.error = String(error && error.message ? error.message : error);
+      }
+      rows.push(row);
+    }
+  } finally {
+    HW6_STATE.alphaContext = previousContext;
+  }
+
+  HW6_STATE.comparisonRows = rows;
+  HW6_STATE.comparisonConfig = {
+    graphEpoch: HW6_STATE.graphEpoch,
+    selectedAlpha: HW6_STATE.selectedAlpha,
+    alpha: alpha,
+    split: name,
+    cohortSize: cohort.length,
+  };
+  return rows;
+}
+
+/**
+ * Render an honest "cancelled" note into the evaluation panels so a partial run
+ * is never mistaken for a final result.
+ *
+ * @returns {void}
+ */
+function hw6RenderCancelledNote() {
+  const note = '<p class="empty-state">The last evaluation was cancelled before it finished; no result from it is presented as final. Press \u201cEvaluate\u201d again to run to completion.</p>';
+  const targets = ["comparison-results", "recall-results"];
+  for (let i = 0; i < targets.length; i++) {
+    const el = document.getElementById(targets[i]);
+    if (el) el.innerHTML = note;
+  }
+}
+
+/**
+ * True only when a validation sweep is COMPLETE: it has a selected alpha and
+ * every grid alpha produced a finite recall with no error. A sweep that is
+ * missing an alpha, or whose any alpha failed, is never reusable and never
+ * selects a setting.
+ *
+ * @param {*} sweep
+ * @returns {boolean}
+ */
+function hw6SweepComplete(sweep) {
+  if (!sweep || !Array.isArray(sweep.rows) || sweep.rows.length === 0) return false;
+  if (sweep.best === null || sweep.best === undefined) return false;
+  if (typeof sweep.best !== "number" || !Number.isFinite(sweep.best)) return false;
+  if (sweep.rows.length !== ALPHA_GRID.length) return false;
+  const seen = {};
+  for (let i = 0; i < sweep.rows.length; i++) {
+    const r = sweep.rows[i];
+    if (!r || r.error) return false;
+    const recallRaw = r.recall;
+    if (typeof recallRaw !== "number" || !Number.isFinite(recallRaw) || recallRaw < 0 || recallRaw > 1) return false;
+    const a = r.alpha;
+    if (typeof a !== "number" || !Number.isFinite(a)) return false;
+    const k = hw6AlphaKey(a);
+    if (seen[k]) return false;
+    seen[k] = true;
+    if (HW6_STATE.splitReady) {
+      const vcoh = hw6SharedCohort("val");
+      if (typeof r.cohortSize !== "number" || !Number.isFinite(r.cohortSize) || r.cohortSize !== vcoh.length) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * True only when every four-method comparison row carries a finite recall and no
+ * error. Used to reject an incomplete/errored evaluation as a "complete final
+ * run" so a partial comparison can never be cached as the completed result.
+ *
+ * @param {Array<Object>} rows
+ * @returns {boolean}
+ */
+function hw6ComparisonComplete(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+  if (rows.length !== 4) return false;
+  const required = { popularity: true, pagerank: true, ppr: true, mf: true };
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || r.error) return false;
+    const recallRaw = r.recall;
+    if (typeof recallRaw !== "number" || !Number.isFinite(recallRaw) || recallRaw < 0 || recallRaw > 1) return false;
+    const m = String(r.method);
+    if (!required.hasOwnProperty(m)) return false;
+    required[m] = false;
+    if (r.split !== "test") return false;
+    if (HW6_STATE.splitReady) {
+      const tcoh = hw6SharedCohort("test");
+      if (typeof r.cohortSize !== "number" || !Number.isFinite(r.cohortSize) || r.cohortSize !== tcoh.length) return false;
+    }
+    if (m === "pagerank" || m === "ppr") {
+      if (r.alpha === null || r.alpha === undefined) return false;
+      if (typeof r.alpha !== "number" || !Number.isFinite(r.alpha)) return false;
+      if (typeof HW6_STATE.selectedAlpha === "number" && Number.isFinite(HW6_STATE.selectedAlpha) &&
+          Math.abs(r.alpha - HW6_STATE.selectedAlpha) > 1e-9) return false;
+    } else {
+      if (r.alpha !== null && r.alpha !== undefined) return false;
+    }
+  }
+  return required.popularity === false && required.pagerank === false && required.ppr === false && required.mf === false;
+}
+
+/**
+ * Shallow-copy an array of plain result rows so a later live-state reset cannot
+ * mutate an already-captured snapshot (rows are replaced, never edited in place).
+ *
+ * @param {Array<Object>|null} rows
+ * @returns {Array<Object>}
+ */
+function hw6CloneRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map(function (row) { return Object.assign({}, row); });
+}
+
+/**
+ * Build the immutable completed-run snapshot from the just-finished live state.
+ * A new object graph is produced (rows copied, convergence and recallReport
+ * cloned) so nothing captured here shares mutable structure with `HW6_STATE`.
+ *
+ * @param {Object} params `{ identity, alpha, comparisonRows, alphaSweepRows,
+ *   selectedAlpha, convergence, recallReport, recommendations, config }`
+ * @returns {Object}
+ */
+function hw6BuildCompletedSnapshot(params) {
+  const convergence = {};
+  ["pagerank", "ppr"].forEach(function (key) {
+    const record = params.convergence ? params.convergence[key] : null;
+    convergence[key] = record ? Object.assign({}, record) : null;
+  });
+  return {
+    identity: params.identity,
+    completedAt: new Date().toISOString(),
+    graphEpoch: HW6_STATE.graphEpoch,
+    backend: HW6_STATE.backend,
+    alpha: params.alpha,
+    selectedAlpha: params.selectedAlpha,
+    config: Object.assign({}, params.config),
+    comparisonRows: hw6CloneRows(params.comparisonRows),
+    alphaSweepRows: hw6CloneRows(params.alphaSweepRows),
+    convergence: convergence,
+    recallReport: params.recallReport ? Object.assign({}, params.recallReport) : null,
+    recommendations: params.recommendations ? JSON.parse(JSON.stringify(params.recommendations)) : null,
+  };
+}
+
+/**
+ * The run identity/status columns appended to exports so a CSV row set is never
+ * mistaken for the current run when it is actually the last completed one.
+ *
+ * @returns {{id:(string|null), status:string}}
+ */
+function hw6ExportRunIdentity() {
+  const snapshot = HW6_STATE.completedSnapshot;
+  return {
+    id: snapshot && snapshot.identity ? snapshot.identity : "",
+    status: HW6_STATE.runState,
+  };
+}
+
+/**
+ * Run the evaluation asynchronously with progress and cancellation.
+ *
+ * Order is fixed by the assignment: the PPR alpha is chosen by a validation-only
+ * sweep first; only then are the primary TEST PageRank/PPR (and the popularity /
+ * MF baselines) evaluated at that selected alpha. A completed sweep for the
+ * current graph is reused by a repeat run. If the sweep cannot select an alpha,
+ * the primary comparison is deliberately not run: a test number must never be
+ * reported as if a failed sweep had selected it.
+ *
+ * @param {{stages?:"full"|"sweep"|"comparison"}} [opts]
+ * @returns {Promise<void>}
+ */
+async function hw6RunEvaluationAsync(opts) {
+  const options = opts || {};
+  const mode = options.stages || "full";
+  if (HW6_STATE.activeRun) {
+    hw6SetStatus("An evaluation is already running \u2014 wait for it to finish or press Cancel.");
+    return;
+  }
+  const run = { cancelled: false, startedAt: Date.now() };
+  HW6_STATE.activeRun = run;
+  HW6_STATE.runState = "active";
+  hw6SetRunning(true);
+  const hasBatch = typeof graphPropagateBatch === "function";
+  hw6ShowProgressInitial();
+
+  try {
+    const graph = hw6ActiveGraph();
+
+    if (mode !== "comparison") {
+      let sweep;
+      // Reuse a COMPLETE sweep for the current epoch, for both the full and the
+      // sweep-only entry points: an identical repeat must not recompute walks.
+      const reusable = hw6SweepComplete(HW6_STATE.sweep) && HW6_STATE.sweep.epoch === HW6_STATE.graphEpoch;
+      if (reusable) {
+        sweep = HW6_STATE.sweep;
+      } else if (graph && hw6GraphJsReady() && hasBatch) {
+        sweep = await hw6AsyncAlphaSweep(graph, run);
+        HW6_STATE.sweep = hw6SweepComplete(sweep)
+          ? { epoch: HW6_STATE.graphEpoch, rows: sweep.rows, best: sweep.best, note: sweep.note }
+          : null;
+      } else if (graph && hw6GraphJsReady()) {
+        sweep = hw6RunAlphaSweep();
+        HW6_STATE.sweep = hw6SweepComplete(sweep)
+          ? { epoch: HW6_STATE.graphEpoch, rows: sweep.rows, best: sweep.best, note: sweep.note }
+          : null;
+      } else {
+        sweep = { rows: [], best: null, note: graph ? "graph propagation is unavailable" : "no graph is built" };
+      }
+      hw6RenderAlphaSweep(sweep);
+      if (run.cancelled) throw hw6CancelledError("after validation sweep");
+
+      if (mode === "sweep") {
+        if (hw6SweepComplete(sweep)) {
+          HW6_STATE.runState = "completed";
+          hw6SetStatus("Validation sweep complete \u2014 selected alpha " + hw6Fmt(sweep.best, 2) + ".");
+        } else {
+          HW6_STATE.runState = "failed";
+          hw6SetStatus("Validation sweep incomplete \u2014 no alpha selected" + (sweep.note ? " (" + sweep.note + ")" : "") + ". A partial sweep never selects a setting.");
+        }
+        const elapsed = Date.now() - run.startedAt;
+        hw6RecordRunSummary({ stage: "Validation sweep", detail: hw6SweepComplete(sweep) ? "selected alpha " + hw6Fmt(sweep.best, 2) : "no alpha selected", elapsedMs: elapsed, backend: HW6_STATE.backend });
+        return;
+      }
+
+      if (graph && sweep.best === null) {
+        HW6_STATE.runState = "failed";
+        hw6SetStatus("The validation sweep did not select an alpha, so the primary comparison was not run \u2014 a failed sweep must not select a test setting.");
+        hw6RecordRunSummary({ stage: "Evaluation", detail: "blocked: no alpha selected", elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+        return;
+      }
+
+      const alpha = sweep.best === null ? hw6ReadAlpha() : sweep.best;
+      HW6_STATE.selectedAlpha = sweep.best;
+      const comparison = hasBatch
+        ? await hw6AsyncComparison(graph, alpha, run)
+        : await hw6RunComparisonSyncAt(alpha);
+      if (run.cancelled) throw hw6CancelledError("after comparison");
+      hw6RenderComparison(comparison);
+      hw6RenderConvergence();
+
+      const method = hw6ReadMethod();
+      const recallTarget = document.getElementById("recall-results");
+      let report = null;
+      if (recallTarget) {
+        const previousContext = HW6_STATE.alphaContext;
+        HW6_STATE.alphaContext = alpha;
+        try {
+          report = recallAtK(method, HW6_K, "test");
+          HW6_STATE.recallReport = report;
+          hw6RenderRecall(report, method, "test");
+        } catch (error) {
+          recallTarget.innerHTML = hw6UnavailableHtml("Retrieval evaluation", error);
+        } finally {
+          HW6_STATE.alphaContext = previousContext;
+        }
+      }
+
+      // A run only counts as completed — and only then becomes the immutable
+      // export snapshot — when the sweep AND every comparison method succeeded.
+      if (!hw6ComparisonComplete(comparison)) {
+        HW6_STATE.runState = "failed";
+        hw6SetStatus("Evaluation incomplete: at least one method produced no finite result; this run is not cached as a completed result and does not replace the previous completed evidence.");
+        hw6RecordRunSummary({ stage: "Evaluation", detail: "incomplete \u2014 not cached", elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+        return;
+      }
+
+      const identity = "run-" + HW6_STATE.graphEpoch + "-" + (HW6_STATE.runCounter += 1);
+      hw6ResetRecommendationRows();
+      const recommendations = hw6RecordCohortRecommendations(alpha);
+      HW6_STATE.completedSnapshot = hw6BuildCompletedSnapshot({
+        identity: identity,
+        alpha: alpha,
+        comparisonRows: comparison,
+        alphaSweepRows: sweep.rows,
+        selectedAlpha: sweep.best,
+        convergence: HW6_STATE.convergence,
+        recallReport: report,
+        recommendations: recommendations,
+        config: { selectedAlpha: sweep.best, alpha: alpha, split: "test", cohortSize: comparison.length ? comparison[0].cohortSize : null, backend: HW6_STATE.backend },
+      });
+      HW6_STATE.runState = "completed";
+      hw6SetStatus("Evaluation run complete \u2014 selected " + (sweep.best === null ? "alpha " + hw6Fmt(alpha, 2) + " (no sweep)" : "alpha " + hw6Fmt(sweep.best, 2)) + "; PageRank and PPR evaluated at that alpha.");
+      hw6RecordRunSummary({ stage: "Evaluation", detail: "selected alpha " + hw6Fmt(alpha, 2), elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+      return;
+    }
+
+    // Comparison-only mode.
+    const alpha = HW6_STATE.selectedAlpha !== null ? HW6_STATE.selectedAlpha : hw6ReadAlpha();
+    const comparison = hasBatch ? await hw6AsyncComparison(graph, alpha, run) : await hw6RunComparisonSyncAt(alpha);
+    if (run.cancelled) throw hw6CancelledError("after comparison");
+    hw6RenderComparison(comparison);
+    hw6RenderConvergence();
+    if (!hw6ComparisonComplete(comparison)) {
+      HW6_STATE.runState = "failed";
+      hw6SetStatus("Comparison incomplete: at least one method produced no finite result; not cached as a completed result.");
+      hw6RecordRunSummary({ stage: "Comparison", detail: "incomplete \u2014 not cached", elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+      return;
+    }
+    const identity = "run-" + HW6_STATE.graphEpoch + "-" + (HW6_STATE.runCounter += 1);
+    hw6ResetRecommendationRows();
+    const recommendations = hw6RecordCohortRecommendations(alpha);
+    HW6_STATE.completedSnapshot = hw6BuildCompletedSnapshot({
+      identity: identity,
+      alpha: alpha,
+      comparisonRows: comparison,
+      alphaSweepRows: HW6_STATE.alphaSweepRows,
+      selectedAlpha: HW6_STATE.selectedAlpha,
+      convergence: HW6_STATE.convergence,
+      recallReport: HW6_STATE.recallReport,
+      recommendations: recommendations,
+      config: { selectedAlpha: HW6_STATE.selectedAlpha, alpha: alpha, split: "test", cohortSize: comparison.length ? comparison[0].cohortSize : null, backend: HW6_STATE.backend },
+    });
+    HW6_STATE.runState = "completed";
+    hw6SetStatus("Comparison complete at alpha " + hw6Fmt(alpha, 2) + ".");
+    hw6RecordRunSummary({ stage: "Comparison", detail: "alpha " + hw6Fmt(alpha, 2), elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+  } catch (error) {
+    if (hw6IsCancelledError(error)) {
+      HW6_STATE.runState = "cancelled";
+      hw6RenderCancelledNote();
+      hw6SetStatus("Evaluation cancelled \u2014 no result from this run is presented as final. Press \u201cEvaluate\u201d again to restart.");
+      hw6RecordRunSummary({ stage: "Evaluation", detail: "cancelled \u2014 previous completed evidence retained", elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+    } else {
+      HW6_STATE.runState = "failed";
+      hw6SetStatus("Evaluation failed: " + String(error && error.message ? error.message : error));
+      hw6RecordRunSummary({ stage: "Evaluation", detail: "failed \u2014 previous completed evidence retained", elapsedMs: Date.now() - run.startedAt, backend: HW6_STATE.backend });
+    }
+  } finally {
+    HW6_STATE.activeRun = null;
+    hw6SetRunning(false);
+    hw6HideProgress();
+  }
+}
+
+/**
+ * Show the progress panel in an indeterminate "starting" state before the first
+ * concrete update arrives.
+ *
+ * @returns {void}
+ */
+function hw6ShowProgressInitial() {
+  const el = hw6ProgressElements();
+  if (!el.panel) return;
+  el.panel.classList.remove("hidden");
+  if (el.stage) el.stage.textContent = "Starting\u2026";
+  if (el.pct) el.pct.textContent = "\u2014";
+  if (el.bar) {
+    el.bar.classList.add("progress-bar--indeterminate");
+    el.bar.style.width = "100%";
+  }
+}
+
+/**
+ * Synchronous comparison at an explicit alpha, used only when the batched kernel
+ * is unavailable. The alpha context makes the synchronous runners agree on the
+ * selected alpha without touching the slider.
+ *
+ * @param {number} alpha
+ * @returns {Promise<Array<Object>>}
+ */
+async function hw6RunComparisonSyncAt(alpha) {
+  const previousContext = HW6_STATE.alphaContext;
+  HW6_STATE.alphaContext = alpha;
+  try {
+    return await hw6RunComparison("test");
+  } finally {
+    HW6_STATE.alphaContext = previousContext;
+  }
+}
+
 /**
  * Validation-only alpha sweep for PPR (readme section 6.1).
  *
@@ -1796,13 +3191,20 @@ function hw6RunAlphaSweep() {
   let bestRecall = -Infinity;
   let note = "";
 
+  // Evaluate each alpha through the programmatic context so the user's demo
+  // slider is never moved, and the propagation caches stay keyed by the swept
+  // alpha (which is what makes repeated evaluations reuse the walks).
+  const previousContext = HW6_STATE.alphaContext;
+
   for (let i = 0; i < ALPHA_GRID.length; i++) {
     const alpha = ALPHA_GRID[i];
     const row = { alpha: alpha, recall: null, cohortSize: hw6SharedCohort("val").length, error: null };
+    HW6_STATE.alphaContext = alpha;
     try {
-      const report = hw6WithAlpha(alpha, function () { return recallAtK("ppr", HW6_K, "val"); });
+      const report = recallAtK("ppr", HW6_K, "val");
       row.recall = Number(report.recall);
       if (Array.isArray(report.cohort)) row.cohortSize = report.cohort.length;
+      // Strict `>`: an exact tie keeps the earlier (smaller) alpha.
       if (Number.isFinite(row.recall) && row.recall > bestRecall) {
         bestRecall = row.recall;
         best = alpha;
@@ -1814,6 +3216,7 @@ function hw6RunAlphaSweep() {
     rows.push(row);
   }
 
+  HW6_STATE.alphaContext = previousContext;
   HW6_STATE.alphaSweepRows = rows;
   HW6_STATE.alphaSweepNote = note;
   return { rows: rows, best: best, note: note };
@@ -2313,6 +3716,7 @@ function hw6RunTwoUserDemoHtml(demo) {
 async function hw6RenderRecommendations() {
   const target = document.getElementById("recommendations");
   if (!target) return;
+  if (hw6RefuseIfBusy("Recommend Top-10")) return;
   const method = hw6ReadMethod();
   const alpha = hw6ReadAlpha();
   if (method === "mf" && (HW6_MF_MODEL === null || MF_INFO.trainedAt === null)) {
@@ -2477,6 +3881,12 @@ function hw6GraphJsReady() {
 function hw6WithSyntheticGraph(R, fn) {
   if (typeof setGraph !== "function" || typeof getGraph !== "function") {
     throw hw6InterfaceError("graph.js `setGraph` / `getGraph` are unavailable");
+  }
+  // Swapping the graph disposes the transition tensors; doing that while a
+  // batched evaluation holds them would corrupt the live run. Refuse rather than
+  // silently break it (the caller surfaces this as a check failure/skip).
+  if (typeof hw6EvaluationActive === "function" && hw6EvaluationActive()) {
+    throw new Error("HW6_EVALUATION_ACTIVE: cannot replace the graph while an evaluation is running");
   }
   const previous = getGraph();
   setGraph(hw6MakeSyntheticGraph(R));
@@ -3230,13 +4640,14 @@ function serializeVerification() {
  *
  * Columns, in order: `method, alpha, recall_at_10, cohort_size,
  * excluded_unseen_ids, excluded_no_eligible_user, mean_popularity, iterations,
- * residual, converged`, then two extra evidence columns (`split`,
- * `excluded_unseen_id_list`) that do not disturb the required prefix.
+ * residual, converged`, then evidence columns (`split`, `excluded_unseen_id_list`,
+ * `run_id`, `run_status`, `generated_at`) that do not disturb the required prefix.
  *
- * Rows come from whatever has actually been run: the four-method TEST
- * comparison, the PPR VALIDATION alpha sweep, and the PageRank / PPR
- * convergence records. An unrun panel simply contributes no row - it is never
- * filled with invented numbers.
+ * Rows come from the immutable last-COMPLETED snapshot only. A cancelled or
+ * failed in-flight run never contributes rows and never mixes with earlier
+ * evidence: the exported file is always one internally consistent completed run,
+ * labelled by `run_id`/`run_status`. Changing the demo slider cannot alter it.
+ * Before any completed run the file is header-only rather than a partial mix.
  *
  * @returns {string} CSV text (RFC 4180 quoting).
  */
@@ -3244,14 +4655,20 @@ function serializeResults() {
   const header = [
     "method", "alpha", "recall_at_10", "cohort_size", "excluded_unseen_ids",
     "excluded_no_eligible_user", "mean_popularity", "iterations", "residual",
-    "converged", "split", "excluded_unseen_id_list",
+    "converged", "split", "excluded_unseen_id_list", "run_id", "run_status",
+    "generated_at",
   ];
   const rows = [];
+  const generatedAt = new Date().toISOString();
+  const snapshot = HW6_STATE.completedSnapshot;
+  const identity = hw6ExportRunIdentity();
 
   const exclusions = HW6_STATE.splitReady ? hw6CohortExclusions("test") : null;
   const unseenList = exclusions && exclusions.unseenIds ? exclusions.unseenIds.join(";") : "";
 
-  (HW6_STATE.comparisonRows || []).forEach(function (row) {
+  if (!snapshot) return hw6CsvDocument(header, rows);
+
+  (snapshot.comparisonRows || []).forEach(function (row) {
     rows.push([
       row.method,
       row.alpha === null ? "" : Number(row.alpha).toFixed(2),
@@ -3265,10 +4682,13 @@ function serializeResults() {
       row.converged === null ? "" : String(row.converged),
       row.split,
       unseenList,
+      identity.id,
+      identity.status,
+      generatedAt,
     ]);
   });
 
-  (HW6_STATE.alphaSweepRows || []).forEach(function (row) {
+  (snapshot.alphaSweepRows || []).forEach(function (row) {
     rows.push([
       "ppr",
       Number(row.alpha).toFixed(2),
@@ -3282,11 +4702,14 @@ function serializeResults() {
       "",
       "val",
       "",
+      identity.id,
+      identity.status,
+      generatedAt,
     ]);
   });
 
   ["pagerank", "ppr"].forEach(function (key) {
-    const record = HW6_STATE.convergence[key];
+    const record = snapshot.convergence[key];
     if (!record) return;
     const verdict = hw6ConvergenceVerdict(record);
     rows.push([
@@ -3302,6 +4725,9 @@ function serializeResults() {
       verdict.value === null ? "" : String(verdict.value),
       "test",
       "",
+      identity.id,
+      identity.status,
+      generatedAt,
     ]);
   });
 
@@ -3319,11 +4745,29 @@ function serializeResults() {
  * @returns {string} CSV text (RFC 4180 quoting; commas inside titles are quoted).
  */
 function serializeRecommendations() {
+  const snapshot = HW6_STATE.completedSnapshot;
   const header = [
     "user_id", "method", "alpha", "rank", "movie_id", "title", "genres",
-    "score", "training_popularity",
+    "score", "training_popularity", "list_mean_popularity", "run_id", "run_status",
   ];
-  const rows = HW6_STATE.recommendationRows.map(function (row) {
+  const snapRecs = snapshot && snapshot.recommendations
+    ? (Array.isArray(snapshot.recommendations.rows) ? snapshot.recommendations.rows : [])
+    : null;
+  const sourceRows = snapRecs !== null ? snapRecs : HW6_STATE.recommendationRows;
+  const identity = snapRecs !== null
+    ? { id: snapshot.identity || "", status: HW6_STATE.runState }
+    : hw6ExportRunIdentity();
+  const groupTotals = {};
+  sourceRows.forEach(function (row) {
+    const key = row.userId + "|" + row.method + "|" + row.alpha;
+    if (!groupTotals[key]) groupTotals[key] = { sum: 0, n: 0 };
+    groupTotals[key].sum += Number(row.trainingPopularity) || 0;
+    groupTotals[key].n += 1;
+  });
+  const rows = sourceRows.map(function (row) {
+    const key = row.userId + "|" + row.method + "|" + row.alpha;
+    const group = groupTotals[key];
+    const mean = group && group.n ? group.sum / group.n : "";
     return [
       row.userId,
       row.method,
@@ -3334,6 +4778,9 @@ function serializeRecommendations() {
       row.genres,
       row.score,
       row.trainingPopularity,
+      mean === "" ? "" : hw6Fmt(mean),
+      identity.id,
+      identity.status,
     ];
   });
   return hw6CsvDocument(header, rows);
@@ -3348,18 +4795,21 @@ function hw6WireExports() {
   const verification = document.getElementById("export-verification");
   if (verification) {
     verification.addEventListener("click", function () {
+      if (hw6RefuseIfBusy("Exporting verification")) return;
       download("verification.json", serializeVerification(), "application/json");
     });
   }
   const results = document.getElementById("export-results");
   if (results) {
     results.addEventListener("click", function () {
+      if (hw6RefuseIfBusy("Exporting results")) return;
       download("results.csv", serializeResults(), "text/csv");
     });
   }
   const recommendations = document.getElementById("export-recommendations");
   if (recommendations) {
     recommendations.addEventListener("click", function () {
+      if (hw6RefuseIfBusy("Exporting recommendations")) return;
       download("recommendations.csv", serializeRecommendations(), "text/csv");
     });
   }
@@ -3382,6 +4832,10 @@ function hw6WireExports() {
  * @returns {void}
  */
 function hw6HandleBuildGraph() {
+  if (hw6EvaluationActive()) {
+    hw6SetStatus("A graph rebuild is disabled while an evaluation is running \u2014 it would replace the graph the live kernel is using. Wait or press Cancel.");
+    return;
+  }
   if (typeof buildGraph !== "function") {
     hw6SetStatus("graph.js `buildGraph` is not available on this page.");
     hw6RenderGraphSummary();
@@ -3504,6 +4958,7 @@ function hw6SafeRenderGraphView() {
  * @returns {void}
  */
 function hw6HandleRunPageRank() {
+  if (hw6RefuseIfBusy("Running PageRank")) return;
   const graph = hw6ActiveGraph();
   const target = document.getElementById("convergence-results");
   if (!graph) {
@@ -3533,6 +4988,7 @@ function hw6HandleRunPageRank() {
  * @returns {void}
  */
 function hw6HandleRunPPR() {
+  if (hw6RefuseIfBusy("Running PPR")) return;
   const graph = hw6ActiveGraph();
   const target = document.getElementById("convergence-results");
   if (!graph) {
@@ -3572,46 +5028,9 @@ function hw6HandleRunPPR() {
  * @returns {Promise<void>}
  */
 async function hw6HandleRecall() {
-  const alpha = hw6ReadAlpha();
-  const method = hw6ReadMethod();
-  const graph = hw6ActiveGraph();
-
-  if (graph) {
-    try {
-      hw6RunAndRecordConvergence("pagerank", graph, alpha);
-    } catch (error) {
-      // Convergence is optional evidence; the comparison below reports gaps.
-    }
-    const seedUserId = hw6ReadNumber("seed-user-select", Number.NaN);
-    if (Number.isFinite(seedUserId)) {
-      try {
-        hw6RunAndRecordConvergence("ppr", graph, alpha, seedUserId);
-      } catch (error) {
-        // Same as above.
-      }
-    }
-  }
-
-  const comparison = await hw6RunComparison("test");
-  hw6RenderConvergence();
-  hw6RenderComparison(comparison);
-
-  const sweep = hw6RunAlphaSweep();
-  hw6RenderAlphaSweep(sweep);
-
-  const target = document.getElementById("recall-results");
-  if (target) {
-    try {
-      const report = recallAtK(method, HW6_K, "test");
-      HW6_STATE.recallReport = report;
-      hw6RenderRecall(report, method, "test");
-    } catch (error) {
-      target.innerHTML = hw6UnavailableHtml("Retrieval evaluation", error);
-    }
-  }
-
-  const selected = sweep.best === null ? "not selected (validation sweep unavailable)" : "alpha " + hw6Fmt(sweep.best, 2);
-  hw6SetStatus("Evaluation run complete \u2014 selected " + selected + ".");
+  // Fixed order: validation sweep selects the alpha, then the primary TEST
+  // comparison runs at that alpha. A completed sweep is reused by a repeat run.
+  await hw6RunEvaluationAsync({ stages: "full" });
 }
 
 /**
@@ -3619,21 +5038,12 @@ async function hw6HandleRecall() {
  * into `#alpha-sweep-results`, reporting the selected alpha (exact ties toward
  * the smaller alpha). Degrades to a readable explanation while the stubs throw.
  *
- * @returns {void}
+ * @returns {Promise<void>}
  */
-function hw6HandleAlphaSweep() {
-  const target = document.getElementById("alpha-sweep-results");
-  let sweep = null;
-  try {
-    sweep = hw6RunAlphaSweep();
-  } catch (error) {
-    if (target) target.innerHTML = hw6UnavailableHtml("Alpha sweep", error);
-    hw6SetStatus("Alpha sweep unavailable: " + String(error && error.message ? error.message : error));
-    return;
-  }
-  hw6RenderAlphaSweep(sweep);
-  const selected = sweep.best === null ? "not selected (validation sweep unavailable)" : "alpha " + hw6Fmt(sweep.best, 2);
-  hw6SetStatus("Alpha sweep (validation Recall@10) complete \u2014 selected " + selected + ".");
+async function hw6HandleAlphaSweep() {
+  // Refresh the validation sweep only (no primary comparison) with progress and
+  // cancellation. Uses the same shared ordering rules as the full evaluation.
+  await hw6RunEvaluationAsync({ stages: "sweep" });
 }
 
 /**
@@ -3645,6 +5055,10 @@ function hw6HandleAlphaSweep() {
  */
 function hw6HandleTwoUserDemo() {
   const target = document.getElementById("two-user-demo-results");
+  if (hw6EvaluationActive()) {
+    hw6SetStatus("The two-user demonstration is disabled while an evaluation is running. Wait or press Cancel.");
+    return;
+  }
   let demo = null;
   try {
     demo = hw6RunTwoUserDemo();
@@ -3674,6 +5088,13 @@ function hw6HandleTwoUserDemo() {
  * @returns {void}
  */
 function hw6HandleRunTests() {
+  // Self-checks temporarily replace the active graph (`setGraph`), which disposes
+  // the tensors the live batched kernel still holds. Refuse while a run is in
+  // flight so the two cannot race.
+  if (hw6EvaluationActive()) {
+    hw6SetStatus("Self-checks are disabled while an evaluation is running \u2014 they temporarily replace the graph. Wait or press Cancel.");
+    return;
+  }
   const summary = runSelfChecks();
   hw6SetStatus(
     "Self-checks: pass " + summary.passed + ", fail " + summary.failed + ", pending " + summary.pending +
@@ -3698,8 +5119,9 @@ function hw6WireControls() {
       const readout = document.getElementById("alpha-value");
       const value = hw6ReadAlpha();
       if (readout) readout.textContent = value.toFixed(2);
-      hw6InvalidateCaches();
-      hw6SetStatus("Alpha changed to " + value.toFixed(2) + " \u2014 cached PageRank and PPR results are stale; run again.");
+      // Caches are keyed by alpha, so no result is dropped here; the next run at
+      // this alpha reuses any walk already computed for it.
+      hw6SetStatus("Alpha set to " + value.toFixed(2) + ". Press a run button to (re)compute at this alpha.");
     });
   }
 
@@ -3709,6 +5131,9 @@ function hw6WireControls() {
     // now (with progress reported and the browser painting between epochs).
     method.addEventListener("change", async function () {
       const value = hw6ReadMethod();
+      if (hw6RefuseIfBusy("Changing the method")) {
+        return;
+      }
       if (value === "mf") {
         await hw6EnsureMfForNeed();
       }
@@ -3739,6 +5164,12 @@ function hw6WireControls() {
 
   const testButton = document.getElementById("run-tests");
   if (testButton) testButton.addEventListener("click", hw6HandleRunTests);
+
+  const cancelButton = document.getElementById("hw6-cancel");
+  if (cancelButton) {
+    cancelButton.disabled = true;
+    cancelButton.addEventListener("click", hw6RequestCancel);
+  }
 
   hw6WireExports();
 }
