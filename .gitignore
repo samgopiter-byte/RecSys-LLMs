@@ -1,3 +1,12 @@
 # HW4: local-only artifacts (NOT part of the course deliverables)
 experiments/
 week4/backup/
+
+# Local report/session delivery and internal audit files.
+/golankov_alexander_a06_report.pdf
+/golankov_alexander_a06_session.json
+/AGENTS.md
+/REQUIREMENTS_MATRIX.md
+/VERIFICATION_LEDGER.md
+/audit/
+/output/
