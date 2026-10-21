@@ -59,26 +59,26 @@ user_id,method,alpha,rank,movie_id,title,genres,score,training_popularity,list_m
 2,ppr,0.50,8,268,Chasing Amy (1997),Drama;Romance,0.00040181103395298123,146,226.7000,run-1-1,completed
 2,ppr,0.50,9,475,Trainspotting (1996),Drama,0.00040160532807931304,164,226.7000,run-1-1,completed
 2,ppr,0.50,10,15,Mr. Holland's Opus (1995),Drama,0.0004009184194728732,160,226.7000,run-1-1,completed
-1,mf,,1,408,"Close Shave, A (1995)",Animation;Comedy;Thriller,5.216143608093262,85,138.5000,run-1-1,completed
-1,mf,,2,100,Fargo (1996),Crime;Drama;Thriller,5.215612888336182,377,138.5000,run-1-1,completed
-1,mf,,3,169,"Wrong Trousers, The (1993)",Animation;Comedy,5.208174228668213,90,138.5000,run-1-1,completed
-1,mf,,4,483,Casablanca (1942),Drama;Romance;War,5.204159736633301,197,138.5000,run-1-1,completed
-1,mf,,5,511,Lawrence of Arabia (1962),Adventure;War,5.051167011260986,134,138.5000,run-1-1,completed
-1,mf,,6,603,Rear Window (1954),Mystery;Thriller,4.895515441894531,152,138.5000,run-1-1,completed
-1,mf,,7,474,Dr. Strangelove or: How I Learned to Stop Worrying and Love the Bomb (1963),Sci-Fi;War,4.884840965270996,133,138.5000,run-1-1,completed
-1,mf,,8,654,Chinatown (1974),Film-Noir;Mystery;Thriller,4.874353408813477,97,138.5000,run-1-1,completed
-1,mf,,9,1142,When We Were Kings (1996),Documentary,4.819425582885742,29,138.5000,run-1-1,completed
-1,mf,,10,484,"Maltese Falcon, The (1941)",Film-Noir;Mystery,4.797304630279541,91,138.5000,run-1-1,completed
-2,mf,,1,483,Casablanca (1942),Drama;Romance;War,4.328004837036133,197,140.9000,run-1-1,completed
-2,mf,,2,135,2001: A Space Odyssey (1968),Drama;Mystery;Sci-Fi;Thriller,4.327209949493408,163,140.9000,run-1-1,completed
-2,mf,,3,197,"Graduate, The (1967)",Drama;Romance,4.323766708374023,160,140.9000,run-1-1,completed
-2,mf,,4,185,Psycho (1960),Horror;Romance;Thriller,4.311724662780762,159,140.9000,run-1-1,completed
-2,mf,,5,654,Chinatown (1974),Film-Noir;Mystery;Thriller,4.307428359985352,97,140.9000,run-1-1,completed
-2,mf,,6,603,Rear Window (1954),Mystery;Thriller,4.300529956817627,152,140.9000,run-1-1,completed
-2,mf,,7,511,Lawrence of Arabia (1962),Adventure;War,4.280074119567871,134,140.9000,run-1-1,completed
-2,mf,,8,474,Dr. Strangelove or: How I Learned to Stop Worrying and Love the Bomb (1963),Sci-Fi;War,4.271368980407715,133,140.9000,run-1-1,completed
-2,mf,,9,180,Apocalypse Now (1979),Drama;War,4.2552876472473145,151,140.9000,run-1-1,completed
-2,mf,,10,513,"Third Man, The (1949)",Mystery;Thriller,4.215903282165527,63,140.9000,run-1-1,completed
+1,mf,,1,100,Fargo (1996),Crime;Drama;Thriller,3.7818644046783447,377,180.4000,run-1-1,completed
+1,mf,,2,483,Casablanca (1942),Drama;Romance;War,3.746046781539917,197,180.4000,run-1-1,completed
+1,mf,,3,357,One Flew Over the Cuckoo's Nest (1975),Drama,3.7326459884643555,202,180.4000,run-1-1,completed
+1,mf,,4,318,Schindler's List (1993),Drama;War,3.7279417514801025,224,180.4000,run-1-1,completed
+1,mf,,5,480,North by Northwest (1959),Comedy;Thriller,3.7024495601654053,128,180.4000,run-1-1,completed
+1,mf,,6,169,"Wrong Trousers, The (1993)",Animation;Comedy,3.6919491291046143,90,180.4000,run-1-1,completed
+1,mf,,7,427,To Kill a Mockingbird (1962),Drama,3.6836793422698975,166,180.4000,run-1-1,completed
+1,mf,,8,496,It's a Wonderful Life (1946),Drama,3.68011736869812,153,180.4000,run-1-1,completed
+1,mf,,9,511,Lawrence of Arabia (1962),Adventure;War,3.679980754852295,134,180.4000,run-1-1,completed
+1,mf,,10,655,Stand by Me (1986),Adventure;Comedy;Drama,3.675419330596924,133,180.4000,run-1-1,completed
+2,mf,,1,174,Raiders of the Lost Ark (1981),Action;Adventure,3.6599650382995605,312,250.6000,run-1-1,completed
+2,mf,,2,98,"Silence of the Lambs, The (1991)",Drama;Thriller,3.647066593170166,308,250.6000,run-1-1,completed
+2,mf,,3,181,Return of the Jedi (1983),Action;Adventure;Romance;Sci-Fi;War,3.6379997730255127,339,250.6000,run-1-1,completed
+2,mf,,4,483,Casablanca (1942),Drama;Romance;War,3.635258436203003,197,250.6000,run-1-1,completed
+2,mf,,5,64,"Shawshank Redemption, The (1994)",Drama,3.6351239681243896,228,250.6000,run-1-1,completed
+2,mf,,6,357,One Flew Over the Cuckoo's Nest (1975),Drama,3.6315903663635254,202,250.6000,run-1-1,completed
+2,mf,,7,318,Schindler's List (1993),Drama;War,3.6297638416290283,224,250.6000,run-1-1,completed
+2,mf,,8,172,"Empire Strikes Back, The (1980)",Action;Adventure;Drama;Romance;Sci-Fi;War,3.6290314197540283,261,250.6000,run-1-1,completed
+2,mf,,9,12,"Usual Suspects, The (1995)",Crime;Thriller,3.6285791397094727,205,250.6000,run-1-1,completed
+2,mf,,10,79,"Fugitive, The (1993)",Action;Thriller,3.628171443939209,230,250.6000,run-1-1,completed
 1,ppr,0.85,1,100,Fargo (1996),Crime;Drama;Thriller,0.0027416825760155916,377,245.5000,run-1-1,completed
 1,ppr,0.85,2,258,Contact (1997),Drama;Sci-Fi,0.00200196192599833,307,245.5000,run-1-1,completed
 1,ppr,0.85,3,286,"English Patient, The (1996)",Drama;Romance;War,0.0018735377816483378,279,245.5000,run-1-1,completed

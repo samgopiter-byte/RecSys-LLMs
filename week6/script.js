@@ -29,7 +29,7 @@
  *
  * PROVIDED (instructor scaffolding — not an exercise to rewrite):
  *   - `hw6InitTf`, the formatting/CSV/exporter helpers, the training-split indices,
- *     `popularityScores`, `mfScores` and the deterministic MF reference model,
+ *     `popularityScores`, `mfScores` and the matrix-factorization reference model,
  *     every panel renderer, the four-method / alpha-sweep / convergence /
  *     two-user-demo runners, the self-check harness and the UI wiring.
  *   - The MF reference is instructor-provided: students must not have to
@@ -163,7 +163,7 @@ const HW6_RUN_GUARD_IDS = [
   "recall-btn", "alpha-sweep-btn", "two-user-demo-btn", "recommend-btn",
   "run-pagerank", "run-ppr", "build-graph", "run-tests", "step-btn",
   "reset-steps", "export-verification", "export-results",
-  "export-recommendations",
+  "export-recommendations", "export-mf-checkpoint",
 ];
 
 /** Select/range inputs disabled while an evaluation is in flight. */
@@ -172,15 +172,16 @@ const HW6_RUN_GUARD_INPUTS = ["method", "alpha", "user-select", "seed-user-selec
 /** Dimensionality of the provided MF reference model. */
 const MF_FACTORS = 16;
 
-/** Fixed seed for the deterministic MF reference (reproducible initialisation). */
-const MF_SEED = 20261013;
-
 /**
- * Training settings, keeping the previous assignment's convention. `reg` is the
- * L2 coefficient applied as `sum(factors^2) * reg / actualBatchSize` (the same
- * per-batch normalisation as the submitted HW5 implementation).
+ * Training settings, ported verbatim from the submitted HW5 implementation
+ * (branch `a05-matrix-factorization`, commit `2474ea4`): 20 epochs, batch 64,
+ * Adam lr 0.01, reg 0.05. `reg` is the L2 coefficient applied as
+ * `sum(factors^2) * reg / actualBatchSize` (the same per-batch normalisation
+ * as the submitted HW5 implementation). Initialisation is unseeded
+ * (`tf.randomNormal` std 0.05) and the batch order is shuffled with
+ * `Math.random`, exactly as in HW5, so a retrained model is a fresh draw.
  */
-const MF_CONFIG = { epochs: 30, lr: 0.01, reg: 0.05, batchSize: 512 };
+const MF_CONFIG = { epochs: 20, lr: 0.01, reg: 0.05, batchSize: 64 };
 
 /**
  * Public description of the provided MF reference model, filled in when the
@@ -194,8 +195,9 @@ const MF_CONFIG = { epochs: 30, lr: 0.01, reg: 0.05, batchSize: 512 };
  * (`reg / actualBatchSize`, matching the HW5 convention).
  *
  * @type {{factors:number, epochs:number, learningRate:number,
- *         regularization:number, batchSize:number, seed:number,
- *         l2Scaling:string, backend:(string|null), checkpoint:(number|null),
+ *         regularization:number, batchSize:number, initialization:string,
+ *         shuffle:string, l2Scaling:string, backend:(string|null),
+ *         checkpoint:(number|null),
  *         validationRMSE:(number|null), trainedAt:(string|null),
  *         history:Array<Object>}}
  */
@@ -205,7 +207,8 @@ const MF_INFO = {
   learningRate: MF_CONFIG.lr,
   regularization: MF_CONFIG.reg,
   batchSize: MF_CONFIG.batchSize,
-  seed: MF_SEED,
+  initialization: "unseeded tf.randomNormal(mean 0, std 0.05)",
+  shuffle: "Math.random Fisher-Yates over ordered indexes, reset each epoch",
   l2Scaling: "reg / actualBatchSize",
   backend: null,
   checkpoint: null,
@@ -930,9 +933,11 @@ function hw6CohortExclusions(splitName) {
 //
 // A 16-dimensional dot-product MF with a global mean, trained on the same
 // chronological split, using `tf.train.adam`, checkpointed by validation RMSE
-// (ties resolved toward the earliest epoch). It is deterministic: factors are
-// initialised from a seeded PRNG and the mini-batch order is drawn from the same
-// generator, so two runs on the same data produce the same model.
+// (ties resolved toward the earliest epoch). The hyperparameters, the
+// unseeded initialisation and the shuffle are the ones the submitted HW5
+// implementation used: factors start at `tf.randomNormal(0, 0.05)` with no
+// seed, and each epoch re-draws the mini-batch order from ordered indexes with
+// `Math.random`, so every training run is a fresh (non-reproducible) draw.
 //
 // Loss (per mini-batch of actual size `size`):
 //   L = mean((rating - (u . i + globalMean))^2)
@@ -941,34 +946,33 @@ function hw6CohortExclusions(splitName) {
 // (train.length % batchSize) is regularised by its own size; this matches the
 // previous assignment's normalisation convention.
 //
-// Differences from the submitted HW5 model, disclosed rather than hidden: HW6
-// uses a fixed batchSize of 512 (HW5 default 64), 30 epochs (HW5 default 20),
-// and a seeded Box-Muller initialisation (HW5 used unseeded tf.randomNormal).
-// No previously saved HW5 weights are loaded: nothing here reads stored weights
-// from disk or storage, so this is the same model FAMILY and objective as HW5,
-// not the identical trained parameters.
+// Ported from the submitted HW5 implementation (branch
+// `a05-matrix-factorization`, commit 2474ea4): 16 factors, 20 epochs, batch 64,
+// Adam lr 0.01, reg 0.05, unseeded `tf.randomNormal` initialisation,
+// `Math.random` shuffling, and RMSE computed with predictions clipped to
+// [1, 5] and out-of-range ids falling back to the global mean - the same
+// `computeRMSEFor` contract as HW5.
+//
+// No previously saved HW5 weights are loaded: nothing here reads stored
+// weights from disk or storage (a repository-wide search found no saved
+// checkpoint artefact), so this re-runs the SAME recipe and objective as HW5
+// and produces a NEW trained model, not the historical parameters. The page
+// can export the newly selected checkpoint (`Export MF checkpoint`) so the
+// exact weights of a run are retained for later reuse.
+//
+// Scoring/display distinction versus HW5: HW5's `recommendTopK` displayed
+// scores clamped to [1, 5] (a display contract for one function). HW6
+// `mfScores` returns the RAW mean + dot score for the shared training-movie
+// candidate pool, because the HW6 sorting contract is "score descending, ties
+// by ascending movie id" over all four methods at once: clamping here would
+// collapse every score above 5 (or below 1) to one value and manufacture ties
+// that change the ranking. The clamp still exists where a rating-scale value
+// is required (RMSE). MF scores are predicted-rating scale and are never
+// presented as PPR walk probabilities.
 //
 // This block is NOT part of the homework stubs. Students report the checkpoint
 // recorded in `MF_INFO`; they do not rebuild the model.
 // ---------------------------------------------------------------------------
-
-/**
- * Deterministic 32-bit PRNG (mulberry32). Returns a function producing values
- * in `[0, 1)`.
- *
- * @param {number} seed
- * @returns {() => number}
- */
-function hw6Mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /**
  * Dispose the provided MF variables so repeated training does not leak memory.
@@ -987,13 +991,21 @@ function hw6DisposeMf() {
 }
 
 /**
- * Batched training RMSE for a split, using the provided MF variables.
+ * Batched RMSE for a split, using the provided MF variables.
+ *
+ * Ported from the HW5 `computeRMSEFor` contract (commit `2474ea4`): an empty
+ * split returns `0` (never divides by zero), an id outside the factor rows is
+ * scored as the global mean through a 0/1 validity mask (never the padding
+ * row), and the prediction is clipped to `[1, 5]` before the error is taken -
+ * the same clamp as `predictRating`. Returns `NaN` when the model is
+ * unavailable and there is at least one row to score.
  *
  * @param {Rating[]} split
- * @returns {number} RMSE, or `NaN` when the model is unavailable.
+ * @returns {number} RMSE (`0` for an empty split), or `NaN` when the model is unavailable.
  */
 function hw6MfRmse(split) {
-  if (!HW6_MF_MODEL || !split || split.length === 0) return Number.NaN;
+  if (!split || split.length === 0) return 0;
+  if (!HW6_MF_MODEL) return Number.NaN;
   const model = HW6_MF_MODEL;
   return tf.tidy(function () {
     const n = split.length;
@@ -1002,15 +1014,23 @@ function hw6MfRmse(split) {
     const userIds = new Int32Array(n);
     const movieIds = new Int32Array(n);
     const actual = new Float32Array(n);
+    const valid = new Float32Array(n);
     for (let k = 0; k < n; k++) {
       const row = split[k];
-      userIds[k] = Math.min(Math.max(0, row.userId), uRows - 1);
-      movieIds[k] = Math.min(Math.max(0, row.movieId), iRows - 1);
+      const u = row.userId;
+      const i = row.movieId;
+      const uOk = u >= 0 && u < uRows;
+      const iOk = i >= 0 && i < iRows;
+      userIds[k] = Math.min(Math.max(0, u), uRows - 1);
+      movieIds[k] = Math.min(Math.max(0, i), iRows - 1);
       actual[k] = row.rating;
+      valid[k] = uOk && iOk ? 1 : 0;
     }
-    const u = tf.gather(model.userFactors, tf.tensor1d(userIds, "int32"));
-    const i = tf.gather(model.itemFactors, tf.tensor1d(movieIds, "int32"));
-    const pred = tf.sum(tf.mul(u, i), 1).add(model.globalMean);
+    const gu = tf.gather(model.userFactors, tf.tensor1d(userIds, "int32"));
+    const gi = tf.gather(model.itemFactors, tf.tensor1d(movieIds, "int32"));
+    const dot = tf.sum(tf.mul(gu, gi), 1);
+    const mask = tf.tensor1d(valid, "float32");
+    const pred = tf.clipByValue(dot.mul(mask).add(model.globalMean), 1, 5);
     const diff = pred.sub(tf.tensor1d(actual, "float32"));
     return Math.sqrt(tf.mean(diff.square()).dataSync()[0]);
   });
@@ -1026,7 +1046,8 @@ function hw6MfRmse(split) {
  * progress instead of freezing for minutes. Concurrent callers share one
  * in-flight promise, so a second need never starts a second training run.
  *
- * Deterministic; leaves the best-validation variables in place. `MF_INFO.trainedAt`
+ * Unseeded (as in HW5); leaves the best-validation variables in place.
+ * `MF_INFO.trainedAt`
  * is set only on success, and `checkpoint` stays `null` while untrained.
  *
  * @returns {Promise<MfModel|null>} The trained model, or `null` when the data or
@@ -1076,6 +1097,10 @@ function hw6EnsureMf(run) {
  *
  * Uses `tf.tidy` per batch, disposes the scalar loss returned by
  * `optimizer.minimize`, and never puts an async callback inside `tf.tidy`.
+ * When a batch queue runs longer than 25 ms the loop awaits `tf.nextFrame()`
+ * once between batches (cooperative yielding): no random number is drawn
+ * between batches, so the batch order, objective and checkpoint rule are
+ * exactly the same as a synchronous loop.
  *
  * @param {Rating[]} train Training rows.
  * @param {{cancelled:boolean, startedAt:number}} [run] Optional active-run token:
@@ -1089,29 +1114,25 @@ async function hw6TrainMf(train, run) {
   const F = MF_FACTORS;
   const userRows = Math.max(1, numUsers + 1);
   const itemRows = Math.max(1, HW6_MAX_MOVIE_ID + 1);
-  const rand = hw6Mulberry32(MF_SEED);
-  const normal = function () {
-    const u = Math.max(rand(), 1e-12);
-    const v = rand();
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-  };
-
-  const uData = new Float32Array(userRows * F);
-  for (let k = 0; k < uData.length; k++) uData[k] = normal() * 0.05;
-  const iData = new Float32Array(itemRows * F);
-  for (let k = 0; k < iData.length; k++) iData[k] = normal() * 0.05;
 
   let globalMean = 0;
   for (let i = 0; i < train.length; i++) globalMean += train[i].rating;
   globalMean /= train.length;
 
-  const userFactors = tf.variable(tf.tensor2d(uData, [userRows, F]));
-  const itemFactors = tf.variable(tf.tensor2d(iData, [itemRows, F]));
+  // Unseeded initialisation, exactly as the HW5 `initializeFactors` (commit
+  // 2474ea4): factors start at tf.randomNormal(mean 0, std 0.05) with no seed,
+  // so every training run is a fresh draw.
+  const userFactors = tf.tidy(function () {
+    return tf.variable(tf.randomNormal([userRows, F], 0, 0.05));
+  });
+  const itemFactors = tf.tidy(function () {
+    return tf.variable(tf.randomNormal([itemRows, F], 0, 0.05));
+  });
   HW6_MF_MODEL = { userFactors: userFactors, itemFactors: itemFactors, globalMean: globalMean };
 
   const optimizer = tf.train.adam(MF_CONFIG.lr);
-  const order = new Int32Array(train.length);
-  for (let i = 0; i < order.length; i++) order[i] = i;
+  let lastYield = Date.now();
+  const yieldGapMs = 25;
 
   let bestVal = Infinity;
   let bestEpoch = 0;
@@ -1121,8 +1142,12 @@ async function hw6TrainMf(train, run) {
 
   try {
     for (let epoch = 1; epoch <= MF_CONFIG.epochs; epoch++) {
+      // Fisher-Yates over fresh ordered indexes with Math.random, rebuilt at
+      // the start of every epoch: the same shuffle contract as HW5 `trainMF`.
+      const order = new Int32Array(train.length);
+      for (let i = 0; i < order.length; i++) order[i] = i;
       for (let i = order.length - 1; i > 0; i--) {
-        const j = Math.floor(rand() * (i + 1));
+        const j = Math.floor(Math.random() * (i + 1));
         const tmp = order[i];
         order[i] = order[j];
         order[j] = tmp;
@@ -1154,6 +1179,18 @@ async function hw6TrainMf(train, run) {
           [userFactors, itemFactors],
         );
         if (cost) cost.dispose();
+        // Cooperative per-batch yield: hands the main thread back while a long
+        // batch queue drains. No random number is drawn between batches and no
+        // batch is ever reordered or skipped, so the maths, the batch order and
+        // the Adam trajectory are identical to a fully synchronous loop.
+        if (typeof tf.nextFrame === "function" && Date.now() - lastYield >= yieldGapMs) {
+          try {
+            await tf.nextFrame();
+          } catch (error) {
+            // Yielding is best-effort; training still completes without it.
+          }
+          lastYield = Date.now();
+        }
       }
 
       const trainRmse = hw6MfRmse(train);
@@ -1211,7 +1248,8 @@ async function hw6TrainMf(train, run) {
     MF_INFO.learningRate = MF_CONFIG.lr;
     MF_INFO.regularization = MF_CONFIG.reg;
     MF_INFO.batchSize = MF_CONFIG.batchSize;
-    MF_INFO.seed = MF_SEED;
+    MF_INFO.initialization = "unseeded tf.randomNormal(mean 0, std 0.05)";
+    MF_INFO.shuffle = "Math.random Fisher-Yates over ordered indexes, reset each epoch";
     MF_INFO.backend = HW6_STATE.backend;
     MF_INFO.checkpoint = bestEpoch || null;
     MF_INFO.validationRMSE = Number.isFinite(bestVal) ? bestVal : null;
@@ -1229,6 +1267,11 @@ async function hw6TrainMf(train, run) {
     }
     console.error("MF reference training failed:", error);
     return null;
+  } finally {
+    // HW5 `trainMF` disposes the Adam optimizer on every path (success,
+    // cancellation, failure); its slot variables would otherwise leak after a
+    // cancelled or failed training run.
+    optimizer.dispose();
   }
 }
 
@@ -1265,6 +1308,14 @@ async function hw6EnsureMfForNeed(run) {
  * Scores are dot products plus the global training mean, on the same scale as
  * the previous assignment's model. They are NOT comparable to PPR walk
  * probabilities.
+ *
+ * Scores are returned RAW (not clamped to [1, 5] as the HW5 `recommendTopK`
+ * display was). HW6 ranks one shared candidate pool by "score descending, ties
+ * by ascending movie id" across all four methods, and a clamp would collapse
+ * every score above 5 into a single value, manufacturing id-tie breaks that
+ * change the ranking. The [1, 5] clamp still applies where a rating-scale
+ * value is required (`hw6MfRmse`). Exports label these as MF scores, not
+ * ratings and not walk probabilities.
  *
  * @param {number} userId Raw user id.
  * @returns {Object<number, number>} `movieId -> score`; empty when the model is
@@ -2756,7 +2807,7 @@ async function hw6AsyncComparison(graph, alpha, run) {
 
   // The four-method comparison needs MF, so this is a legitimate lazy trigger.
   // The run token lets MF report epoch progress and honour a Cancel at an epoch
-  // boundary (the algorithm, seed and checkpoint rule are unchanged).
+  // boundary (the algorithm, hyperparameters and checkpoint rule are unchanged).
   await hw6EnsureMfForNeed(run);
   const mfReady = HW6_MF_MODEL !== null && MF_INFO.trainedAt !== null;
   const seedUser = hw6ReadNumber("seed-user-select", Number.NaN);
@@ -4798,7 +4849,96 @@ function serializeRecommendations() {
 }
 
 /**
- * Wire the three exporter buttons to `download`.
+ * Encode a typed array's bytes as standard base64 (no dependency, no `btoa`
+ * requirement, identical output in the browser and in Node).
+ *
+ * @param {Float32Array} values
+ * @returns {string} base64 of the raw little-endian float32 bytes.
+ */
+function hw6Float32B64(values) {
+  const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const has1 = i + 1 < bytes.length;
+    const has2 = i + 2 < bytes.length;
+    const b1 = has1 ? bytes[i + 1] : 0;
+    const b2 = has2 ? bytes[i + 2] : 0;
+    out += chars[b0 >> 2];
+    out += chars[((b0 & 3) << 4) | (b1 >> 4)];
+    out += has1 ? chars[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+    out += has2 ? chars[b2 & 63] : "=";
+  }
+  return out;
+}
+
+/**
+ * Machine-readable export of the newly selected MF checkpoint.
+ *
+ * Stores the restored best-validation factors (base64 float32 bytes), their
+ * shapes, the training mean, the full training configuration, the selected
+ * checkpoint epoch and validation RMSE, the per-epoch history and the data
+ * provenance. Supplementary reproducibility evidence for THIS run: it exists so
+ * a selected model can be reused later, and it is never presented as recovered
+ * historical HW5 weights (none were found in the repository).
+ *
+ * @returns {string|null} JSON text, or `null` when MF has not been trained yet.
+ */
+function serializeMfCheckpoint() {
+  const model = HW6_MF_MODEL;
+  if (!model || MF_INFO.trainedAt === null) return null;
+  const payload = {
+    schema: "hw6-mf-checkpoint/v1",
+    generated_at: new Date().toISOString(),
+    trained_at: MF_INFO.trainedAt,
+    backend: HW6_STATE.backend || MF_INFO.backend || null,
+    model: {
+      factors: MF_INFO.factors,
+      user_shape: model.userFactors.shape.slice(),
+      item_shape: model.itemFactors.shape.slice(),
+      global_mean: model.globalMean,
+    },
+    checkpoint: {
+      epoch: MF_INFO.checkpoint,
+      validation_rmse: MF_INFO.validationRMSE,
+      rule: "earliest epoch with the minimum finite clipped validation RMSE",
+    },
+    config: {
+      epochs: MF_INFO.epochs,
+      learning_rate: MF_INFO.learningRate,
+      regularization: MF_INFO.regularization,
+      batch_size: MF_INFO.batchSize,
+      optimizer: "adam",
+      l2_scaling: MF_INFO.l2Scaling,
+      initialization: MF_INFO.initialization,
+      shuffle: MF_INFO.shuffle,
+      rmse: "predictions clipped to [1,5]; out-of-range ids scored as global mean",
+    },
+    history: MF_INFO.history,
+    data_provenance: {
+      dataset: "MovieLens 100K (u.data, u.item)",
+      source_files: ["week6/u.data", "week6/u.item"],
+      users: numUsers,
+      movies: movies.length,
+      ratings: ratings.length,
+      train_records: HW6_SPLIT.train.length,
+      val_records: HW6_SPLIT.val.length,
+      test_records: HW6_SPLIT.test.length,
+      split: "per-user chronological 80/10/10 (data.js splitByTimestamp)",
+      training_mean: model.globalMean,
+    },
+    weights: {
+      encoding: "base64 of raw little-endian float32 bytes",
+      user_factors_b64: hw6Float32B64(model.userFactors.dataSync()),
+      item_factors_b64: hw6Float32B64(model.itemFactors.dataSync()),
+    },
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+/**
+ * Wire the exporter buttons to `download`.
  *
  * @returns {void}
  */
@@ -4822,6 +4962,18 @@ function hw6WireExports() {
     recommendations.addEventListener("click", function () {
       if (hw6RefuseIfBusy("Exporting recommendations")) return;
       download("recommendations.csv", serializeRecommendations(), "text/csv");
+    });
+  }
+  const mfCheckpoint = document.getElementById("export-mf-checkpoint");
+  if (mfCheckpoint) {
+    mfCheckpoint.addEventListener("click", function () {
+      if (hw6RefuseIfBusy("Exporting MF checkpoint")) return;
+      const text = serializeMfCheckpoint();
+      if (text === null) {
+        hw6SetStatus("MF checkpoint is not available yet \u2014 train the MF reference first (Evaluate or Recommend with method \"mf\"), then export again.");
+        return;
+      }
+      download("mf_checkpoint.json", text, "application/json");
     });
   }
 }
